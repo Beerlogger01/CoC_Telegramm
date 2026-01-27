@@ -671,6 +671,7 @@ async def main() -> None:
 
     application.bot_data["storage"] = BindingsStorage(settings.bindings_db_path)
 
+    application.add_handler(MessageHandler(filters.COMMAND, log_any_command), group=-1)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("clan", clan))
     application.add_handler(CommandHandler("player", player))
