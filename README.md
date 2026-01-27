@@ -39,6 +39,8 @@ cd coc-telegram-home-server
 cp .env.example .env
 ```
 
+⚠️ **Important**: Create `.env` once from `.env.example` and then edit it manually. Do **not** re-run `cp .env.example .env` later, or you'll overwrite your configured secrets with empty values. If you must recreate `.env`, back up the old file first.
+
 2. **Configure environment variables** in `.env`:
 
 - `COC_TOKEN`: Clash of Clans API token
@@ -46,6 +48,10 @@ cp .env.example .env
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token
 - `REDIS_URL`: Redis connection string (default in `.env.example`)
 - `BACKEND_URL`: Backend service URL used by the bot
+- `BINDINGS_DB_PATH`: SQLite path for bindings (default `/data/bindings.db`)
+- `WAR_REMINDER_ENABLED`: Enable war reminders (true/false)
+- `WAR_REMINDER_WINDOW_HOURS`: Reminder window in hours
+- `WAR_REMINDER_INTERVAL_MINUTES`: Reminder interval in minutes
 
 3. **Run locally with Docker**
 
@@ -126,6 +132,10 @@ sudo systemctl start coc-telegram.service
 
 ## Troubleshooting
 
+- **Verify env values inside containers**:
+  - `docker compose exec backend env | grep -E 'COC_TOKEN|COC_CLAN_TAG|REDIS_URL'`
+  - `docker compose exec bot env | grep -E 'TELEGRAM_BOT_TOKEN|BACKEND_URL|BINDINGS_DB_PATH|WAR_REMINDER'`
+- **401/403 from CoC API**: This often happens when `COC_TOKEN` is empty/invalid or the IP is not whitelisted. Confirm the token value exists in `.env` and is restricted to the correct public IP.
 - **CoC token rejected**: Ensure the token is IP-restricted to your home server's public IP, and that you are not running from a different network. Invalid tokens will return 403/404 or 429 from the backend.
 - **Docker networking**: Use `BACKEND_URL=http://backend:8000` inside Docker; `localhost` will refer to the bot container itself.
 - **Tag formatting**: Tags must use valid Clash of Clans characters (e.g. `#2PRGP0L22`). The backend normalizes tags and URL-encodes `#` as `%23`.
