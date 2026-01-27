@@ -146,6 +146,14 @@ sudo systemctl start coc-telegram.service
 - **Tag formatting**: Tags must use valid Clash of Clans characters (e.g. `#2PRGP0L22`). The backend normalizes tags and URL-encodes `#` as `%23`.
 - **Missing `.env` values**: Ensure `.env` is present and populated with `COC_TOKEN`, `COC_CLAN_TAG`, and `TELEGRAM_BOT_TOKEN`.
 
+## Testing Checklist
+
+- `/ping` in private chat replies with `pong`.
+- `/start` in private chat shows the “Привязать” button.
+- Tap “Привязать” → send tag → receive invite link (if `CLAN_GROUP_ID` is set).
+- `/mytag` in private chat returns the stored tag.
+- Join the clan group with the invite link and ensure unbound users are removed.
+
 ## GitHub Initialization
 
 ```bash
