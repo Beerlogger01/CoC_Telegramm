@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
+import logging
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ class Binding:
 class BindingsStorage:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
+        self._logger = logging.getLogger(__name__)
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._ensure_schema()
@@ -62,6 +64,7 @@ class BindingsStorage:
                 """
             )
             conn.commit()
+        self._logger.info("Bindings schema ensured path=%s", self.db_path)
 
     def upsert_binding(self, binding: Binding) -> None:
         with self._lock, self._connect() as conn:
@@ -91,6 +94,12 @@ class BindingsStorage:
                 ),
             )
             conn.commit()
+        self._logger.info(
+            "Binding upserted group_id=%s user_id=%s tag=%s",
+            binding.group_id,
+            binding.telegram_user_id,
+            binding.coc_player_tag,
+        )
 
     def delete_binding(self, group_id: int, telegram_user_id: int) -> bool:
         with self._lock, self._connect() as conn:
@@ -99,7 +108,14 @@ class BindingsStorage:
                 (group_id, telegram_user_id),
             )
             conn.commit()
-            return cursor.rowcount > 0
+            removed = cursor.rowcount > 0
+        self._logger.info(
+            "Binding delete group_id=%s user_id=%s removed=%s",
+            group_id,
+            telegram_user_id,
+            removed,
+        )
+        return removed
 
     def get_binding(self, group_id: int, telegram_user_id: int) -> Binding | None:
         with self._connect() as conn:
@@ -107,7 +123,14 @@ class BindingsStorage:
                 "SELECT * FROM bindings WHERE group_id = ? AND telegram_user_id = ?",
                 (group_id, telegram_user_id),
             ).fetchone()
-        return self._row_to_binding(row)
+        binding = self._row_to_binding(row)
+        self._logger.info(
+            "Binding lookup group_id=%s user_id=%s found=%s",
+            group_id,
+            telegram_user_id,
+            binding is not None,
+        )
+        return binding
 
     def get_bindings_for_group(self, group_id: int) -> list[Binding]:
         with self._connect() as conn:
@@ -115,7 +138,9 @@ class BindingsStorage:
                 "SELECT * FROM bindings WHERE group_id = ?",
                 (group_id,),
             ).fetchall()
-        return [binding for row in rows if (binding := self._row_to_binding(row))]
+        bindings = [binding for row in rows if (binding := self._row_to_binding(row))]
+        self._logger.info("Bindings lookup group_id=%s count=%s", group_id, len(bindings))
+        return bindings
 
     def get_bindings_for_tags(self, group_id: int, tags: Iterable[str]) -> list[Binding]:
         tags_list = list(tags)
@@ -127,12 +152,21 @@ class BindingsStorage:
                 f"SELECT * FROM bindings WHERE group_id = ? AND coc_player_tag IN ({placeholders})",
                 (group_id, *tags_list),
             ).fetchall()
-        return [binding for row in rows if (binding := self._row_to_binding(row))]
+        bindings = [binding for row in rows if (binding := self._row_to_binding(row))]
+        self._logger.info(
+            "Bindings lookup group_id=%s tags_count=%s result_count=%s",
+            group_id,
+            len(tags_list),
+            len(bindings),
+        )
+        return bindings
 
     def get_group_ids(self) -> list[int]:
         with self._connect() as conn:
             rows = conn.execute("SELECT DISTINCT group_id FROM bindings").fetchall()
-        return [row[0] for row in rows]
+        group_ids = [row[0] for row in rows]
+        self._logger.info("Binding group ids count=%s", len(group_ids))
+        return group_ids
 
     def get_cooldowns(self, group_id: int, user_ids: Iterable[int]) -> dict[int, datetime]:
         user_list = list(user_ids)
@@ -151,6 +185,12 @@ class BindingsStorage:
                 results[int(row[0])] = datetime.fromisoformat(row[1])
             except (TypeError, ValueError):
                 continue
+        self._logger.info(
+            "Cooldowns lookup group_id=%s user_count=%s result_count=%s",
+            group_id,
+            len(user_list),
+            len(results),
+        )
         return results
 
     def set_cooldowns(self, group_id: int, user_ids: Iterable[int], timestamp: datetime) -> None:
@@ -168,6 +208,11 @@ class BindingsStorage:
                 payload,
             )
             conn.commit()
+        self._logger.info(
+            "Cooldowns updated group_id=%s user_count=%s",
+            group_id,
+            len(payload),
+        )
 
     @staticmethod
     def _row_to_binding(row: sqlite3.Row | None) -> Binding | None:

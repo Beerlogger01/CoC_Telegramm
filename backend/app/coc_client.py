@@ -23,13 +23,27 @@ class NotFoundError(ValueError):
     pass
 
 
+class UnauthorizedError(ValueError):
+    pass
+
+
+class ForbiddenError(ValueError):
+    pass
+
+
+class RateLimitError(ValueError):
+    pass
+
+
 def normalize_tag(tag: str) -> str:
-    cleaned = tag.strip().upper()
+    cleaned = tag.replace(" ", "").strip().upper()
     if not cleaned.startswith("#"):
         cleaned = f"#{cleaned}"
     raw = cleaned.lstrip("#")
     if not raw or not TAG_PATTERN.fullmatch(raw):
+        logger.warning("Invalid tag format input=%s normalized=%s", tag, cleaned)
         raise InvalidTagError("Invalid tag format")
+    logger.info("Normalized tag input=%s normalized=%s", tag, cleaned)
     return cleaned
 
 
@@ -45,9 +59,11 @@ async def fetch_with_cache(
 ) -> dict[str, Any]:
     cached = await get_cached_json(redis, cache_key)
     if cached:
+        logger.info("Cache hit key=%s", cache_key)
         return cached
 
     try:
+        logger.info("CoC API request url=%s", url)
         response = await client.get(url)
     except httpx.TimeoutException as exc:
         logger.warning("CoC API timeout", exc_info=exc)
@@ -56,8 +72,13 @@ async def fetch_with_cache(
         logger.warning("CoC API request failed", exc_info=exc)
         raise RuntimeError("CoC API unavailable") from exc
 
+    logger.info("CoC API response status=%s url=%s", response.status_code, url)
+    if response.status_code == 401:
+        raise UnauthorizedError("Unauthorized token")
+    if response.status_code == 403:
+        raise ForbiddenError("Forbidden (IP not whitelisted or token invalid)")
     if response.status_code == 429:
-        raise PermissionError("Rate limit exceeded")
+        raise RateLimitError("Rate limit exceeded")
     if response.status_code == 404:
         raise NotFoundError("Not found")
     if response.status_code >= 400:

@@ -11,7 +11,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 from app.backend_client import fetch_json
 from app.bindings_storage import Binding, BindingsStorage
-from app.settings import settings
+from app.settings import settings, validate_settings
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -52,6 +52,7 @@ def normalize_tag(tag: str) -> str:
     cleaned = tag.replace(" ", "").upper()
     if not cleaned.startswith("#"):
         cleaned = f"#{cleaned}"
+    logger.info("Normalized tag input=%s normalized=%s", tag, cleaned)
     return cleaned
 
 
@@ -85,12 +86,12 @@ def binding_error_message(status: int) -> str:
         return "Invalid player tag format."
     if status == 401:
         return "Backend token invalid. Please update the backend token."
+    if status == 403:
+        return "Backend IP is not whitelisted for Clash of Clans."
     if status == 404:
         return "Player not found."
     if status == 429:
         return "Rate limit reached. Please try again later."
-    if status == 503:
-        return "Backend IP is not whitelisted for Clash of Clans."
     if status == 504:
         return "Backend timed out contacting Clash of Clans."
     return "Backend error while validating player."
@@ -122,6 +123,10 @@ async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 message = "Rate limit reached. Please try again later."
             elif status == 400:
                 message = "Invalid clan tag configured."
+            elif status == 401:
+                message = "Backend token invalid. Please update the backend token."
+            elif status == 403:
+                message = "Backend IP is not whitelisted for Clash of Clans."
             elif status == 504:
                 message = "Backend timed out contacting Clash of Clans."
             else:
@@ -150,6 +155,10 @@ async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 message = "Invalid player tag format."
             elif status == 404:
                 message = "Player not found."
+            elif status == 401:
+                message = "Backend token invalid. Please update the backend token."
+            elif status == 403:
+                message = "Backend IP is not whitelisted for Clash of Clans."
             elif status == 429:
                 message = "Rate limit reached. Please try again later."
             elif status == 504:
@@ -176,6 +185,10 @@ async def war(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 message = "Rate limit reached. Please try again later."
             elif status == 400:
                 message = "Invalid clan tag configured."
+            elif status == 401:
+                message = "Backend token invalid. Please update the backend token."
+            elif status == 403:
+                message = "Backend IP is not whitelisted for Clash of Clans."
             elif status == 504:
                 message = "Backend timed out contacting Clash of Clans."
             else:
@@ -333,6 +346,12 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def main() -> None:
+    missing = validate_settings()
+    if missing:
+        logger.error("Missing required environment variables: %s", ", ".join(missing))
+        raise SystemExit(1)
+    logger.info("Environment validation passed")
+
     application = ApplicationBuilder().token(settings.telegram_bot_token).build()
 
     application.bot_data["storage"] = BindingsStorage(settings.bindings_db_path)

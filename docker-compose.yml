@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   redis:
     image: redis:7-alpine
@@ -13,6 +11,8 @@ services:
     env_file:
       - .env
     environment:
+      COC_TOKEN: ${COC_TOKEN}
+      COC_CLAN_TAG: ${COC_CLAN_TAG}
       REDIS_URL: ${REDIS_URL}
     depends_on:
       - redis
@@ -25,6 +25,10 @@ services:
       context: ./bot
     env_file:
       - .env
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      BACKEND_URL: ${BACKEND_URL}
+      BINDINGS_DB_PATH: ${BINDINGS_DB_PATH}
     depends_on:
       - backend
     restart: unless-stopped

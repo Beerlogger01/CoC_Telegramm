@@ -6,8 +6,17 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from redis.asyncio import Redis
 
-from app.coc_client import InvalidTagError, NotFoundError, get_clan, get_player, get_war
-from app.settings import settings
+from app.coc_client import (
+    ForbiddenError,
+    InvalidTagError,
+    NotFoundError,
+    RateLimitError,
+    UnauthorizedError,
+    get_clan,
+    get_player,
+    get_war,
+)
+from app.settings import settings, validate_settings
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -15,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    missing = validate_settings()
+    if missing:
+        logger.error("Missing required environment variables: %s", ", ".join(missing))
+        raise SystemExit(1)
+    logger.info("Environment validation passed")
+
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
     timeout = httpx.Timeout(settings.request_timeout_seconds)
     headers = {"Authorization": f"Bearer {settings.coc_token}"}
@@ -50,7 +65,11 @@ async def clan(request: Request):
         return await get_clan(client, redis)
     except InvalidTagError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except PermissionError as exc:
+    except UnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RateLimitError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -68,7 +87,11 @@ async def player(tag: str, request: Request):
         return await get_player(client, redis, tag)
     except InvalidTagError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except PermissionError as exc:
+    except UnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RateLimitError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -86,7 +109,11 @@ async def war(request: Request):
         return await get_war(client, redis)
     except InvalidTagError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except PermissionError as exc:
+    except UnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RateLimitError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
