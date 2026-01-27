@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import httpx
+from redis.asyncio import Redis
+
+from app.cache import get_cached_json, set_cached_json
+from app.settings import settings
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_tag(tag: str) -> str:
+    cleaned = tag.strip().upper()
+    if not cleaned.startswith("#"):
+        cleaned = f"#{cleaned}"
+    return cleaned
+
+
+def encode_tag(tag: str) -> str:
+    return normalize_tag(tag).replace("#", "%23")
+
+
+async def fetch_with_cache(
+    client: httpx.AsyncClient,
+    redis: Redis,
+    cache_key: str,
+    url: str,
+) -> dict[str, Any]:
+    cached = await get_cached_json(redis, cache_key)
+    if cached:
+        return cached
+
+    try:
+        response = await client.get(url)
+    except httpx.RequestError as exc:
+        logger.warning("CoC API request failed", exc_info=exc)
+        raise RuntimeError("CoC API unavailable") from exc
+
+    if response.status_code == 429:
+        raise PermissionError("Rate limit exceeded")
+    if response.status_code == 404:
+        raise ValueError("Not found")
+    if response.status_code >= 400:
+        raise RuntimeError("CoC API error")
+
+    payload = response.json()
+    await set_cached_json(redis, cache_key, payload, settings.cache_ttl_seconds)
+    return payload
+
+
+async def get_clan(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
+    clan_tag = normalize_tag(settings.coc_clan_tag)
+    cache_key = f"clan:{clan_tag}"
+    url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}"
+    return await fetch_with_cache(client, redis, cache_key, url)
+
+
+async def get_player(client: httpx.AsyncClient, redis: Redis, tag: str) -> dict[str, Any]:
+    normalized = normalize_tag(tag)
+    cache_key = f"player:{normalized}"
+    url = f"{settings.coc_api_base}/players/{encode_tag(normalized)}"
+    return await fetch_with_cache(client, redis, cache_key, url)
+
+
+async def get_war(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
+    clan_tag = normalize_tag(settings.coc_clan_tag)
+    cache_key = f"war:{clan_tag}"
+    url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/currentwar"
+    return await fetch_with_cache(client, redis, cache_key, url)
