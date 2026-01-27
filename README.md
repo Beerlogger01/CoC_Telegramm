@@ -18,6 +18,7 @@ Redis (cache layer)
 
 - FastAPI backend with Redis caching
 - Telegram bot commands for clan, player, and war data
+- Player tag bindings with war reminder mentions
 - Dockerized deployment with docker-compose
 - IP-restricted CoC API token used only by the backend
 - Environment-driven configuration
@@ -71,6 +72,21 @@ docker compose logs -f
 1. Open Telegram and start a chat with `@BotFather`.
 2. Create a bot and get the token.
 3. Paste the token into `.env` as `TELEGRAM_BOT_TOKEN`.
+
+## Player Bindings & War Reminders
+
+Use these commands inside a group or supergroup chat:
+
+- `/bind #PLAYER_TAG`: Link your Telegram account to a Clash of Clans player tag.
+- `/unbind`: Remove your current binding for the group.
+- `/mytag`: Display your bound tag for the group.
+
+When a war is active and the war end time is within the reminder window, the bot checks the clan war roster for members with 0 attacks used. If a bound player is found, the bot posts a single reminder message mentioning each bound user by ID. Each user is cooled down for one hour between reminders. Configure behavior with:
+
+- `BINDINGS_DB_PATH` (default `/data/bindings.db`)
+- `WAR_REMINDER_ENABLED` (true/false)
+- `WAR_REMINDER_WINDOW_HOURS` (default `4`)
+- `WAR_REMINDER_INTERVAL_MINUTES` (default `15`)
 
 ## Endpoints
 
