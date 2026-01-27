@@ -52,6 +52,12 @@ cp .env.example .env
 docker compose up --build
 ```
 
+4. **View logs**
+
+```bash
+docker compose logs -f
+```
+
 ## Clash of Clans API Token
 
 1. Visit https://developer.clashofclans.com
@@ -76,6 +82,10 @@ Backend provides:
 
 The bot calls these endpoints and never calls the Clash of Clans API directly.
 
+## Health Check
+
+`GET /health` returns a simple status payload for monitoring.
+
 ## Deploy on a Home Server
 
 1. Install Docker and Docker Compose.
@@ -97,6 +107,13 @@ sudo systemctl daemon-reload
 sudo systemctl enable coc-telegram.service
 sudo systemctl start coc-telegram.service
 ```
+
+## Troubleshooting
+
+- **CoC token rejected**: Ensure the token is IP-restricted to your home server's public IP, and that you are not running from a different network. Invalid tokens will return 403/404 or 429 from the backend.
+- **Docker networking**: Use `BACKEND_URL=http://backend:8000` inside Docker; `localhost` will refer to the bot container itself.
+- **Tag formatting**: Tags must use valid Clash of Clans characters (e.g. `#2PRGP0L22`). The backend normalizes tags and URL-encodes `#` as `%23`.
+- **Missing `.env` values**: Ensure `.env` is present and populated with `COC_TOKEN`, `COC_CLAN_TAG`, and `TELEGRAM_BOT_TOKEN`.
 
 ## GitHub Initialization
 

@@ -6,7 +6,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from redis.asyncio import Redis
 
-from app.coc_client import get_clan, get_player, get_war
+from app.coc_client import InvalidTagError, NotFoundError, get_clan, get_player, get_war
 from app.settings import settings
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
@@ -48,10 +48,14 @@ async def clan(request: Request):
     client = get_http_client(request)
     try:
         return await get_clan(client, redis)
+    except InvalidTagError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except ValueError as exc:
+    except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -62,10 +66,14 @@ async def player(tag: str, request: Request):
     client = get_http_client(request)
     try:
         return await get_player(client, redis, tag)
+    except InvalidTagError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except ValueError as exc:
+    except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -76,9 +84,18 @@ async def war(request: Request):
     client = get_http_client(request)
     try:
         return await get_war(client, redis)
+    except InvalidTagError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except ValueError as exc:
+    except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}

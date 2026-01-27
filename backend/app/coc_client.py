@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -11,11 +12,24 @@ from app.settings import settings
 
 logger = logging.getLogger(__name__)
 
+TAG_PATTERN = re.compile(r"^[0289PYLQGRJCUV]+$")
+
+
+class InvalidTagError(ValueError):
+    pass
+
+
+class NotFoundError(ValueError):
+    pass
+
 
 def normalize_tag(tag: str) -> str:
     cleaned = tag.strip().upper()
     if not cleaned.startswith("#"):
         cleaned = f"#{cleaned}"
+    raw = cleaned.lstrip("#")
+    if not raw or not TAG_PATTERN.fullmatch(raw):
+        raise InvalidTagError("Invalid tag format")
     return cleaned
 
 
@@ -35,6 +49,9 @@ async def fetch_with_cache(
 
     try:
         response = await client.get(url)
+    except httpx.TimeoutException as exc:
+        logger.warning("CoC API timeout", exc_info=exc)
+        raise TimeoutError("CoC API timeout") from exc
     except httpx.RequestError as exc:
         logger.warning("CoC API request failed", exc_info=exc)
         raise RuntimeError("CoC API unavailable") from exc
@@ -42,7 +59,7 @@ async def fetch_with_cache(
     if response.status_code == 429:
         raise PermissionError("Rate limit exceeded")
     if response.status_code == 404:
-        raise ValueError("Not found")
+        raise NotFoundError("Not found")
     if response.status_code >= 400:
         raise RuntimeError("CoC API error")
 

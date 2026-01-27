@@ -60,8 +60,17 @@ async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             payload = await fetch_json(client, "/clan")
             await update.message.reply_text(format_clan(payload), parse_mode=ParseMode.MARKDOWN)
         except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
             logger.warning("Backend error: %s", exc)
-            await update.message.reply_text("Backend error while fetching clan data.")
+            if status == 429:
+                message = "Rate limit reached. Please try again later."
+            elif status == 400:
+                message = "Invalid clan tag configured."
+            elif status == 504:
+                message = "Backend timed out contacting Clash of Clans."
+            else:
+                message = "Backend error while fetching clan data."
+            await update.message.reply_text(message)
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
             await update.message.reply_text("Backend is unreachable. Please try again later.")
@@ -79,8 +88,19 @@ async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             payload = await fetch_json(client, f"/player/{tag}")
             await update.message.reply_text(format_player(payload), parse_mode=ParseMode.MARKDOWN)
         except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
             logger.warning("Backend error: %s", exc)
-            await update.message.reply_text("Backend error while fetching player data.")
+            if status == 400:
+                message = "Invalid player tag format."
+            elif status == 404:
+                message = "Player not found."
+            elif status == 429:
+                message = "Rate limit reached. Please try again later."
+            elif status == 504:
+                message = "Backend timed out contacting Clash of Clans."
+            else:
+                message = "Backend error while fetching player data."
+            await update.message.reply_text(message)
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
             await update.message.reply_text("Backend is unreachable. Please try again later.")
@@ -94,8 +114,17 @@ async def war(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             payload = await fetch_json(client, "/war")
             await update.message.reply_text(format_war(payload), parse_mode=ParseMode.MARKDOWN)
         except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
             logger.warning("Backend error: %s", exc)
-            await update.message.reply_text("Backend error while fetching war data.")
+            if status == 429:
+                message = "Rate limit reached. Please try again later."
+            elif status == 400:
+                message = "Invalid clan tag configured."
+            elif status == 504:
+                message = "Backend timed out contacting Clash of Clans."
+            else:
+                message = "Backend error while fetching war data."
+            await update.message.reply_text(message)
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
             await update.message.reply_text("Backend is unreachable. Please try again later.")
