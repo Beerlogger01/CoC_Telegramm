@@ -71,7 +71,7 @@ def normalize_tag(tag: str) -> str:
     raw = cleaned.lstrip("#")
     if not raw or not TAG_PATTERN.fullmatch(raw):
         raise InvalidTagError("Invalid tag format")
-    logger.debug("Normalized tag input=%s normalized=%s", tag, cleaned)
+    logger.info("Normalized tag input=%s normalized=%s", tag, cleaned)
     return cleaned
 
 
@@ -158,32 +158,6 @@ async def handle_handler_exception(
         await update.effective_message.reply_text(
             "Unexpected error occurred. Please try again."
         )
-
-
-async def log_any_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.effective_user:
-        return
-    chat = update.effective_chat
-    logger.info(
-        "Command received chat_id=%s chat_type=%s user_id=%s username=%s text=%s entities=%s",
-        chat.id if chat else None,
-        chat.type if chat else None,
-        update.effective_user.id,
-        update.effective_user.username,
-        update.message.text,
-        update.message.entities,
-    )
-
-
-async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message:
-        return
-    command = (update.message.text or "").split()[0]
-    await update.message.reply_text(f"Unknown command: {command}")
-
-
-async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.exception("Update error", exc_info=context.error)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -318,11 +292,6 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def bind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
-    logger.info(
-        "bind called chat_type=%s args=%s",
-        update.effective_chat.type if update.effective_chat else None,
-        context.args,
-    )
     try:
         if not ensure_private_chat(update):
             await update.message.reply_text("Please use /bind in a private chat with the bot.")
@@ -472,9 +441,7 @@ async def process_binding(
     except Exception as exc:  # noqa: BLE001
         logger.error("Invite creation failed user_id=%s error=%s", update.effective_user.id, exc)
         await update.message.reply_text(
-            f"Bound {mention} to {html.escape(tag)} successfully.\n"
-            "I could not create an invite link. Please make sure the bot is an admin "
-            "with permission to invite users.",
+            f"Bound {mention} to {html.escape(tag)} successfully.",
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )
@@ -508,11 +475,6 @@ async def unbind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def mytag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
-    logger.info(
-        "mytag called chat_type=%s args=%s",
-        update.effective_chat.type if update.effective_chat else None,
-        context.args,
-    )
     try:
         if not ensure_private_chat(update):
             await update.message.reply_text("Please use /mytag in a private chat with the bot.")
@@ -595,20 +557,6 @@ async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
     storage: BindingsStorage = context.application.bot_data["storage"]
     for member in update.message.new_chat_members:
         if member.is_bot:
-            continue
-        try:
-            member_status = await context.bot.get_chat_member(
-                update.effective_chat.id,
-                member.id,
-            )
-            if member_status.status in {"administrator", "creator"}:
-                continue
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Failed to fetch member status user_id=%s error=%s",
-                member.id,
-                exc,
-            )
             continue
         binding = storage.get_binding(settings.clan_group_id, member.id)
         if not binding:
@@ -738,8 +686,6 @@ async def main() -> None:
         MessageHandler(filters.TEXT & ~filters.COMMAND, capture_tag)
     )
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, verify_new_members))
-    application.add_handler(MessageHandler(filters.COMMAND, unknown_command), group=999)
-    application.add_error_handler(on_error)
     application.add_error_handler(handle_handler_exception)
 
     if settings.war_reminder_enabled:

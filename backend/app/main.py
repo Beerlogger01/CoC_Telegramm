@@ -64,7 +64,7 @@ async def clan(request: Request):
     try:
         return await get_clan(client, redis)
     except InvalidTagError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except UnauthorizedError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except ForbiddenError as exc:
@@ -86,7 +86,7 @@ async def player(tag: str, request: Request):
     try:
         return await get_player(client, redis, tag)
     except InvalidTagError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except UnauthorizedError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except ForbiddenError as exc:

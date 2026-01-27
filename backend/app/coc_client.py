@@ -43,7 +43,7 @@ def normalize_tag(tag: str) -> str:
     if not raw or not TAG_PATTERN.fullmatch(raw):
         logger.warning("Invalid tag format input=%s normalized=%s", tag, cleaned)
         raise InvalidTagError("Invalid tag format")
-    logger.debug("Normalized tag input=%s normalized=%s", tag, cleaned)
+    logger.info("Normalized tag input=%s normalized=%s", tag, cleaned)
     return cleaned
 
 
