@@ -344,7 +344,7 @@ async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # User didn't provide tag or said "я" - use their binding
         binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
         if not binding:
-            message = "Вы не привязаны к игроку. Используйте /bind <tag> или /player <tag>"
+            message = "Пожалуйста напишите ник игрока или напишите 'я'"
             if update.callback_query:
                 await update.callback_query.answer()
                 await update.callback_query.edit_message_text(message)
