@@ -93,16 +93,26 @@ def format_activity_report(payload: dict[str, Any]) -> str:
         msg += f"🔨 *Атак сделано:* {attacks_done}/{attacks_done + attacks_remaining}\n"
     msg += "\n"
     
+    def translate_role(role: str) -> str:
+        """Translate role to Russian."""
+        role_map = {
+            "leader": "Лидер",
+            "coLeader": "Co-Лидер",
+            "admin": "Администратор",
+            "member": "Участник",
+        }
+        return role_map.get(role, role)
+    
     msg += "🟢 *Самые активные:*\n"
     for player in most_active[:5]:
         name = player.get("name", "Unknown")
-        role = player.get("role", "member").replace("leader", "Лидер").replace("coLeader", "Co-Лидер").replace("member", "Участник")
+        role = translate_role(player.get("role", "member"))
         msg += f"  • {name} ({role})\n"
     
     msg += "\n🔴 *Неактивные:*\n"
     for player in least_active[:5]:
         name = player.get("name", "Unknown")
-        role = player.get("role", "member").replace("leader", "Лидер").replace("coLeader", "Co-Лидер").replace("member", "Участник")
+        role = translate_role(player.get("role", "member"))
         msg += f"  • {name} ({role})\n"
     
     return msg
@@ -780,8 +790,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await player(update, context)
         elif callback_data == "menu_report":
             # Send activity report for Lex
-            await send_activity_report_to_user(context, update.effective_user.id)
             await update.callback_query.edit_message_text("📋 Отчет об активности клана отправляется...")
+            await send_activity_report_to_user(context, update.effective_user.id)
         else:
             await update.callback_query.edit_message_text("Неизвестная команда")
     except Exception as e:
@@ -1484,7 +1494,7 @@ async def main() -> None:
     await application.updater.start_polling()
     
     # Register weekly activity report after polling starts
-    if settings.lex_user_id:
+    if settings.lex_coc_tag:
         application.job_queue.run_daily(
             weekly_activity_report_job,
             time=time(hour=10, minute=0, tzinfo=timezone.utc),

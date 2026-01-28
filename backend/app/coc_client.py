@@ -162,7 +162,7 @@ async def get_clan_activity_report(client: httpx.AsyncClient, redis: Redis) -> d
     war_attacks_remaining = 0
     if war_state == "inWar":
         war_members = war_data.get("clan", {}).get("members", [])
-        war_attacks_done = sum(1 for m in war_members if m.get("attacks", []))
+        war_attacks_done = sum(1 for m in war_members if m.get("attacks") and len(m.get("attacks", [])) > 0)
         war_attacks_remaining = len(war_members) - war_attacks_done
     
     return {
