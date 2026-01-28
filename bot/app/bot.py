@@ -1490,7 +1490,6 @@ async def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", menu))
     application.add_handler(CommandHandler("clan", clan))
-    application.add_handler(CommandHandler("clanstats", clan_stats))
     application.add_handler(CommandHandler("topplayers", top_players))
     application.add_handler(CommandHandler("player", player))
     application.add_handler(CommandHandler("war", war))
