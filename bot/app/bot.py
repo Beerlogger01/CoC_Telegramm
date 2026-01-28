@@ -1600,7 +1600,8 @@ async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await send_or_edit_message(update, "Unexpected error occurred.")
 
 
-
+async def main() -> None:
+    """Main async function to start the bot."""
     logger.info("Bot environment snapshot: %s", env_snapshot())
     logger.info("Bot settings snapshot: %s", settings_snapshot())
     missing = validate_settings()

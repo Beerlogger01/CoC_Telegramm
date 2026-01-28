@@ -351,7 +351,8 @@ async def get_next_war_analysis(client: httpx.AsyncClient, redis: Redis) -> dict
     cache_key = f"warlog:{clan_tag}"
     url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/warlog"
     warlog_data = await fetch_with_cache(client, redis, cache_key, url)
-    last_war = warlog_data[0] if warlog_data else {}
+    warlog_items = warlog_data.get("items", []) if warlog_data else []
+    last_war = warlog_items[0] if warlog_items else {}
     
     # Get clan war league data
     cwl_cache_key = f"cwl:{clan_tag}"
