@@ -659,6 +659,59 @@ async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def grouplink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send group invite link to bound members (if they lost it)."""
+    if not update.message or not update.effective_user:
+        return
+    if not ensure_private_chat(update):
+        return
+    
+    try:
+        # Check if user is bound
+        storage: BindingsStorage = context.application.bot_data["storage"]
+        binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
+        
+        if not binding:
+            await update.message.reply_text(
+                "❌ Вы не привязаны к боту. Используйте /bind чтобы привязаться."
+            )
+            return
+        
+        if settings.clan_group_id is None:
+            await update.message.reply_text(
+                "⚠️ Группа клана ещё не настроена. Свяжитесь с администратором."
+            )
+            return
+        
+        # Generate new invite link
+        expire_at = datetime.now(timezone.utc) + timedelta(minutes=settings.invite_ttl_minutes)
+        invite = await context.bot.create_chat_invite_link(
+            chat_id=settings.clan_group_id,
+            expire_date=expire_at,
+            member_limit=1,
+        )
+        
+        logger.info(
+            "Group link sent user_id=%s tag=%s expire_at=%s",
+            update.effective_user.id,
+            binding.coc_player_tag,
+            expire_at.isoformat(),
+        )
+        
+        await update.message.reply_text(
+            f"✅ Ссылка для присоединения к группе клана:\n"
+            f"{invite.invite_link}\n\n"
+            f"⏱️ Ссылка действительна {settings.invite_ttl_minutes} минут",
+            disable_web_page_preview=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to send group link: %s", exc)
+        await update.message.reply_text(
+            "❌ Ошибка при создании ссылки. Попробуйте позже."
+        )
+
+
+
 async def settings_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
@@ -669,6 +722,7 @@ async def settings_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Verify that new members are bound to the bot before joining clan group."""
     if not update.message or not update.message.new_chat_members:
         return
     if update.effective_chat is None:
@@ -682,9 +736,18 @@ async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
         binding = storage.get_binding(settings.clan_group_id, member.id)
         if not binding:
             try:
+                # Send warning message with bind button
+                mention = format_mention(member.id, member.full_name)
                 await update.message.reply_text(
-                    "You must bind first using /bind in private chat."
+                    f"⚠️ {mention} попытался присоединиться, но не привязан к боту!\n\n"
+                    f"Чтобы присоединиться к группе клана, нужно:\n"
+                    f"1. Написать боту @{context.bot.username} в личные сообщения\n"
+                    f"2. Нажать кнопку 'Привязать' и ввести свой тег\n\n"
+                    f"После привязки вы сможете присоединиться к группе.",
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
                 )
+                # Remove from group (ban then unban to kick)
                 await context.bot.ban_chat_member(update.effective_chat.id, member.id)
                 await context.bot.unban_chat_member(update.effective_chat.id, member.id)
                 logger.info(
@@ -699,8 +762,11 @@ async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     exc,
                 )
             continue
+        
+        # Member is bound - welcome them
         mention = format_mention(member.id, member.full_name)
-        message = f"{mention} joined as {html.escape(binding.coc_player_tag)}"
+        player_tag = html.escape(binding.coc_player_tag)
+        message = f"✅ {mention} присоединился как {player_tag}"
         try:
             await update.message.reply_text(
                 message,
@@ -994,6 +1060,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("unbind", unbind))
     application.add_handler(CommandHandler("mytag", mytag))
     application.add_handler(CommandHandler("chatid", chatid))
+    application.add_handler(CommandHandler("grouplink", grouplink))
     application.add_handler(CommandHandler("settings", settings_info))
     application.add_handler(CallbackQueryHandler(bind_start, pattern="^bind_start$"))
     application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
