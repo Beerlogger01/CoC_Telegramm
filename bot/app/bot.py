@@ -1,5 +1,6 @@
 import asyncio
 import html
+import os
 import logging
 import re
 from urllib.parse import quote
@@ -712,6 +713,61 @@ async def log_any_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.info("Command received: %s from user %s", update.message.text, update.effective_user.id)
 
 
+async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reply with AI-generated text when the bot is mentioned or directly replied-to.
+
+    - If `OPENAI_API_KEY` is set in env, call OpenAI Chat Completions API.
+    - Otherwise reply with a safe echo fallback.
+    """
+    if not update.message or not update.message.text:
+        return
+
+    text = update.message.text
+    bot_username = None
+    try:
+        bot_username = (context.bot.username or "").lower()
+    except Exception:
+        bot_username = os.getenv("BOT_USERNAME", "").lower()
+
+    mentioned = False
+    if bot_username and f"@{bot_username}" in (text or "").lower():
+        mentioned = True
+    # check if replying to bot
+    if not mentioned and update.message.reply_to_message:
+        try:
+            if update.message.reply_to_message.from_user and update.message.reply_to_message.from_user.id == context.bot.id:
+                mentioned = True
+        except Exception:
+            pass
+
+    if not mentioned:
+        return
+
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if openai_key:
+        try:
+            async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+                headers = {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"}
+                body = {
+                    "model": "gpt-3.5-turbo",
+                    "messages": [{"role": "user", "content": text}],
+                    "max_tokens": 256,
+                }
+                resp = await client.post("https://api.openai.com/v1/chat/completions", json=body, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+                reply = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                if reply:
+                    await update.message.reply_text(reply)
+                    return
+        except Exception as exc:  # fallback to safe reply
+            logger.warning("OpenAI request failed: %s", exc)
+
+    # Fallback reply if no API key or failure
+    safe_reply = f"Я упомянут! Вы написали: {text[:400]}"
+    await update.message.reply_text(safe_reply)
+
+
 async def main() -> None:
     logger.info("Bot environment snapshot: %s", env_snapshot())
     logger.info("Bot settings snapshot: %s", settings_snapshot())
@@ -748,6 +804,9 @@ async def main() -> None:
     application.add_handler(CommandHandler("settings", settings_info))
     application.add_handler(CallbackQueryHandler(bind_start, pattern="^bind_start$"))
     application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
+    # AI mention handler: replies when the bot is mentioned or replied-to
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_reply_handler))
+
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, capture_tag)
     )
