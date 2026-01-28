@@ -20,7 +20,7 @@ from telegram.ext import (
 
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
-from app.settings import settings, validate_settings
+from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -128,6 +128,26 @@ def ensure_group_chat(update: Update) -> bool:
 def ensure_private_chat(update: Update) -> bool:
     chat = update.effective_chat
     return chat is not None and chat.type == ChatType.PRIVATE
+
+
+def format_settings_report() -> str:
+    lines = [
+        "Bot settings snapshot:",
+    ]
+    for key, value in settings_snapshot().items():
+        lines.append(f"- {key}: {value}")
+    return "\n".join(lines)
+
+
+async def log_any_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    logger.info(
+        "Command received user_id=%s chat_id=%s text=%s",
+        update.effective_user.id if update.effective_user else None,
+        update.effective_chat.id if update.effective_chat else None,
+        update.message.text,
+    )
 
 
 def bind_keyboard() -> InlineKeyboardMarkup:
@@ -414,7 +434,8 @@ async def process_binding(
         if settings.clan_group_id is None:
             await update.message.reply_text(
                 f"Bound {mention} to {html.escape(tag)} successfully.\n"
-                "Clan group is not configured yet.",
+                "Clan group is not configured yet. "
+                "Ask an admin to set CLAN_GROUP_ID (use /chatid in the group).",
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
@@ -547,6 +568,29 @@ async def capture_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("Unexpected error occurred. Please try again.")
 
 
+async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_chat:
+        return
+    if ensure_group_chat(update):
+        await update.message.reply_text(
+            f"Chat ID: `{update.effective_chat.id}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    await update.message.reply_text(
+        "Please run /chatid in the target group chat to obtain its ID."
+    )
+
+
+async def settings_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    if not ensure_private_chat(update):
+        await update.message.reply_text("Please use /settings in a private chat with the bot.")
+        return
+    await update.message.reply_text(format_settings_report())
+
+
 async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.new_chat_members:
         return
@@ -661,10 +705,20 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def main() -> None:
+    logger.info("Bot environment snapshot: %s", env_snapshot())
+    logger.info("Bot settings snapshot: %s", settings_snapshot())
     missing = validate_settings()
     if missing:
-        logger.error("Missing required environment variables: %s", ", ".join(missing))
+        logger.error("Settings validation failed:\n- %s", "\n- ".join(missing))
+        logger.error(
+            "Fix the missing/invalid environment variables and restart the bot."
+        )
         raise SystemExit(1)
+    if settings.clan_group_id is None:
+        logger.warning(
+            "CLAN_GROUP_ID is not set. Invite links and member verification are disabled. "
+            "Add the bot to the clan group and run /chatid to obtain the ID."
+        )
     logger.info("Environment validation passed")
 
     application = ApplicationBuilder().token(settings.telegram_bot_token).build()
@@ -680,6 +734,8 @@ async def main() -> None:
     application.add_handler(CommandHandler("bind", bind))
     application.add_handler(CommandHandler("unbind", unbind))
     application.add_handler(CommandHandler("mytag", mytag))
+    application.add_handler(CommandHandler("chatid", chatid))
+    application.add_handler(CommandHandler("settings", settings_info))
     application.add_handler(CallbackQueryHandler(bind_start, pattern="^bind_start$"))
     application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
     application.add_handler(
