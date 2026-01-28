@@ -139,6 +139,17 @@ def format_settings_report() -> str:
     return "\n".join(lines)
 
 
+async def log_any_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    logger.info(
+        "Command received user_id=%s chat_id=%s text=%s",
+        update.effective_user.id if update.effective_user else None,
+        update.effective_chat.id if update.effective_chat else None,
+        update.message.text,
+    )
+
+
 def bind_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("Привязать", callback_data="bind_start")]]
