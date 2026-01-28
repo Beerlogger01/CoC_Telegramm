@@ -25,7 +25,8 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str | None = None
     backend_url: str = "http://backend:8000"
-    request_timeout_seconds: int = 10
+    request_timeout_seconds: int = 30
+    debug: bool = True
     bindings_db_path: str = "/data/bindings.db"
     clan_group_id: int | None = None
     invite_ttl_minutes: int = 10

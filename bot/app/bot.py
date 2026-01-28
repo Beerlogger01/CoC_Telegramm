@@ -22,8 +22,10 @@ from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
 from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+log_level = logging.DEBUG if settings.debug else logging.INFO
+logging.basicConfig(level=log_level, format="%(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
+logger.debug("Debug mode enabled")
 
 TAG_PATTERN = re.compile(r"^[0289PYLQGRJCUV]+$")
 TAG_EXTRACT_PATTERN = re.compile(r"#?[0289PYLQGRJCUV]{4,}")
@@ -184,6 +186,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
     try:
+        logger.debug("Start command from user %s", update.effective_user.id)
         if ensure_private_chat(update):
             await update.message.reply_text(
                 "To continue, bind your account.",
@@ -193,8 +196,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             "Welcome! Use /clan, /player <tag>, or /war to get Clash of Clans info."
         )
-    except Exception:  # noqa: BLE001
-        logger.exception("Failed to handle /start")
+    except Exception as e:  # noqa: BLE001
+        logger.error("Failed to handle /start: %s", e, exc_info=settings.debug)
 
 
 async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -704,6 +707,11 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         storage.set_cooldowns(group_id, reminded_user_ids, now)
 
 
+async def log_any_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message and update.message.text:
+        logger.info("Command received: %s from user %s", update.message.text, update.effective_user.id)
+
+
 async def main() -> None:
     logger.info("Bot environment snapshot: %s", env_snapshot())
     logger.info("Bot settings snapshot: %s", settings_snapshot())
@@ -721,7 +729,9 @@ async def main() -> None:
         )
     logger.info("Environment validation passed")
 
-    application = ApplicationBuilder().token(settings.telegram_bot_token).build()
+    from telegram.request import HTTPXRequest
+    request = HTTPXRequest(read_timeout=settings.request_timeout_seconds)
+    application = ApplicationBuilder().token(settings.telegram_bot_token).request(request).build()
 
     application.bot_data["storage"] = BindingsStorage(settings.bindings_db_path)
 
