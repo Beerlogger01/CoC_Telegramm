@@ -165,7 +165,33 @@ def bind_cancel_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def extract_tag(text: str) -> str | None:
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Main menu with all bot functions."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("👥 Топ игроков", callback_data="menu_topplayers"),
+            InlineKeyboardButton("⚔️ Статистика клана", callback_data="menu_clanstats"),
+        ],
+        [
+            InlineKeyboardButton("🏘️ Информация о клане", callback_data="menu_clan"),
+            InlineKeyboardButton("📊 Война", callback_data="menu_war"),
+        ],
+        [
+            InlineKeyboardButton("👤 Информация об игроке", callback_data="menu_player"),
+            InlineKeyboardButton("⚙️ Привязка", callback_data="bind_start"),
+        ],
+    ])
+
+
+async def send_or_edit_message(update: Update, text: str, parse_mode: str = ParseMode.MARKDOWN, reply_markup = None) -> None:
+    """Send message for regular command or edit for callback query."""
+    if update.message:
+        await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+    elif update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+
+
+
     match = TAG_EXTRACT_PATTERN.search(text.replace(" ", "").upper())
     if not match:
         return None
@@ -201,13 +227,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Failed to handle /start: %s", e, exc_info=settings.debug)
 
 
-async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show main menu with all bot functions."""
     if not update.message:
+        return
+    try:
+        await update.message.reply_text(
+            "🎮 *Меню бота*\n\n"
+            "Выберите функцию:",
+            reply_markup=main_menu_keyboard(),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error("Failed to handle /menu: %s", e, exc_info=settings.debug)
+
+
+async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message and not update.callback_query:
         return
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
             payload = await fetch_json(client, "/clan")
-            await update.message.reply_text(format_clan(payload), parse_mode=ParseMode.MARKDOWN)
+            await send_or_edit_message(update, format_clan(payload))
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             logger.warning("Backend error: %s", exc)
@@ -223,13 +264,13 @@ async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 message = "Backend timed out contacting Clash of Clans."
             else:
                 message = "Backend error while fetching clan data."
-            await update.message.reply_text(message)
+            await send_or_edit_message(update, message)
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
-            await update.message.reply_text("Backend is unreachable. Please try again later.")
+            await send_or_edit_message(update, "Backend is unreachable. Please try again later.")
         except Exception:  # noqa: BLE001
             logger.exception("Unhandled error in /clan")
-            await update.message.reply_text("Unexpected error occurred. Please try again.")
+            await send_or_edit_message(update, "Unexpected error occurred. Please try again.")
 
 
 async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -274,12 +315,12 @@ async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def war(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message:
+    if not update.message and not update.callback_query:
         return
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
             payload = await fetch_json(client, "/war")
-            await update.message.reply_text(format_war(payload), parse_mode=ParseMode.MARKDOWN)
+            await send_or_edit_message(update, format_war(payload))
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             logger.warning("Backend error: %s", exc)
@@ -295,13 +336,13 @@ async def war(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 message = "Backend timed out contacting Clash of Clans."
             else:
                 message = "Backend error while fetching war data."
-            await update.message.reply_text(message)
+            await send_or_edit_message(update, message)
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
-            await update.message.reply_text("Backend is unreachable. Please try again later.")
+            await send_or_edit_message(update, "Backend is unreachable. Please try again later.")
         except Exception:  # noqa: BLE001
             logger.exception("Unhandled error in /war")
-            await update.message.reply_text("Unexpected error occurred. Please try again.")
+            await send_or_edit_message(update, "Unexpected error occurred. Please try again.")
 
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -519,6 +560,38 @@ async def mytag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Unexpected error occurred. Please try again.")
 
 
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle menu button callbacks."""
+    if not update.callback_query:
+        return
+    
+    callback_data = update.callback_query.data
+    
+    try:
+        await update.callback_query.answer()
+        
+        # Route to appropriate handler
+        if callback_data == "menu_topplayers":
+            context.args = []
+            await top_players(update, context)
+        elif callback_data == "menu_clanstats":
+            await clan_stats(update, context)
+        elif callback_data == "menu_clan":
+            await clan(update, context)
+        elif callback_data == "menu_war":
+            await war(update, context)
+        elif callback_data == "menu_player":
+            # For player, we need to ask for tag
+            await update.callback_query.edit_message_text(
+                "Пожалуйста отправьте тег игрока (например: #ABC123DEF)\n"
+                "Или используйте /player <tag>"
+            )
+        else:
+            await update.callback_query.edit_message_text("Неизвестная команда")
+    except Exception as e:
+        logger.error("Menu callback error: %s", e, exc_info=settings.debug)
+
+
 async def bind_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.callback_query or not update.effective_user:
         return
@@ -715,7 +788,7 @@ async def log_any_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show top 10 clan members by trophies."""
-    if not update.message:
+    if not update.message and not update.callback_query:
         return
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
@@ -735,21 +808,21 @@ async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 lines.append(f"{i}. {name} - {trophies} 🏆 (TH{th})")
             
             message = "\n".join(lines)
-            await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+            await send_or_edit_message(update, message)
         except httpx.HTTPStatusError as exc:
             logger.warning("Backend error: %s", exc)
-            await update.message.reply_text("Failed to fetch top players. Try again later.")
+            await send_or_edit_message(update, "Failed to fetch top players. Try again later.")
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
-            await update.message.reply_text("Backend is unreachable.")
+            await send_or_edit_message(update, "Backend is unreachable.")
         except Exception:  # noqa: BLE001
             logger.exception("Unhandled error in /top-players")
-            await update.message.reply_text("Unexpected error occurred.")
+            await send_or_edit_message(update, "Unexpected error occurred.")
 
 
 async def clan_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show clan statistics and war info."""
-    if not update.message:
+    if not update.message and not update.callback_query:
         return
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
@@ -772,16 +845,16 @@ async def clan_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 )
                 clan_msg += war_info
             
-            await update.message.reply_text(clan_msg, parse_mode=ParseMode.MARKDOWN)
+            await send_or_edit_message(update, clan_msg)
         except httpx.HTTPStatusError as exc:
             logger.warning("Backend error: %s", exc)
-            await update.message.reply_text("Failed to fetch clan stats.")
+            await send_or_edit_message(update, "Failed to fetch clan stats.")
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
-            await update.message.reply_text("Backend is unreachable.")
+            await send_or_edit_message(update, "Backend is unreachable.")
         except Exception:  # noqa: BLE001
             logger.exception("Unhandled error in /clan-stats")
-            await update.message.reply_text("Unexpected error occurred.")
+            await send_or_edit_message(update, "Unexpected error occurred.")
 
 
 async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -910,6 +983,7 @@ async def main() -> None:
 
     application.add_handler(MessageHandler(filters.COMMAND, log_any_command), group=-1)
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("menu", menu))
     application.add_handler(CommandHandler("clan", clan))
     application.add_handler(CommandHandler("clanstats", clan_stats))
     application.add_handler(CommandHandler("topplayers", top_players))
@@ -923,6 +997,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("settings", settings_info))
     application.add_handler(CallbackQueryHandler(bind_start, pattern="^bind_start$"))
     application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
+    application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     # AI mention handler: replies when the bot is mentioned or replied-to
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_reply_handler))
 
