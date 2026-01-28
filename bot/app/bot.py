@@ -971,11 +971,14 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     clan_members = payload.get("clan", {}).get("members", [])
     tags_missing_attacks: set[str] = set()
+    members_by_tag: dict[str, dict] = {}
     for member in clan_members:
         if attacks_used(member) != 0 or not member.get("tag"):
             continue
         try:
-            tags_missing_attacks.add(normalize_tag(member["tag"]))
+            tag = normalize_tag(member["tag"])
+            tags_missing_attacks.add(tag)
+            members_by_tag[tag] = member
         except InvalidTagError:
             logger.warning("Skipping invalid member tag in war payload")
     if not tags_missing_attacks:
@@ -988,12 +991,39 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         cooldowns = storage.get_cooldowns(group_id, user_ids)
         mentions: list[str] = []
         reminded_user_ids: list[int] = []
+        
+        # Attempt to rename users and collect mentions
         for binding in bindings:
             last_reminded = cooldowns.get(binding.telegram_user_id)
             if last_reminded and now - last_reminded < timedelta(hours=1):
                 continue
-            mentions.append(format_mention(binding.telegram_user_id, binding.telegram_full_name))
+            
+            coc_player_name = None
+            if binding.coc_player_tag in members_by_tag:
+                coc_player_name = members_by_tag[binding.coc_player_tag].get("name")
+            
+            if coc_player_name:
+                # Try to rename user in chat with CoC nickname
+                try:
+                    await context.bot.get_chat_member(chat_id=group_id, user_id=binding.telegram_user_id)
+                    await context.bot.set_chat_member_custom_title(
+                        chat_id=group_id,
+                        user_id=binding.telegram_user_id,
+                        custom_title=coc_player_name[:16],  # Telegram limit is 16 chars
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Could not set custom title for user %s: %s", binding.telegram_user_id, exc)
+                # Mention with CoC nickname in parentheses
+                mention = format_mention(binding.telegram_user_id, binding.telegram_full_name)
+                mentions.append(f"{mention} ({coc_player_name})")
+            else:
+                # Fallback to regular mention
+                mentions.append(format_mention(binding.telegram_user_id, binding.telegram_full_name))
+            
             reminded_user_ids.append(binding.telegram_user_id)
+            # Add micro pause between mentions to avoid flooding
+            await asyncio.sleep(0.1)
+        
         if not mentions:
             continue
         message = (
