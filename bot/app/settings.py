@@ -40,9 +40,16 @@ class Settings(BaseSettings):
     def parse_clan_group_id(cls, value: object) -> int | None:
         if value is None:
             return None
-        if isinstance(value, str) and not value.strip():
-            return None
-        return value
+        if isinstance(value, str):
+            if not value.strip():
+                return None
+            try:
+                return int(value)
+            except ValueError:
+                return None
+        if isinstance(value, int):
+            return value
+        return None
 
 
 settings = Settings()
