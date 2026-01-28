@@ -762,6 +762,33 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     return
         except Exception as exc:  # fallback to safe reply
             logger.warning("OpenAI request failed: %s", exc)
+    
+    # Use local GPT4All model (free, runs on CPU)
+    try:
+        from gpt4all import GPT4All
+        
+        # Run in executor to avoid blocking async event loop
+        loop = asyncio.get_event_loop()
+        
+        def generate_reply(prompt: str) -> str:
+            try:
+                # orca-mini-3b is a compact model good for Raspberry Pi 5
+                model_name = os.getenv("LOCAL_MODEL", "orca-mini")
+                llm = GPT4All(model_name)
+                response = llm.generate(prompt, max_tokens=256, temp=0.7)
+                return response.strip()[:500]  # Limit reply length
+            except Exception as e:
+                logger.warning("GPT4All generation failed: %s", e)
+                return None
+        
+        reply = await loop.run_in_executor(None, generate_reply, text)
+        if reply:
+            await update.message.reply_text(reply)
+            return
+    except ImportError:
+        logger.warning("gpt4all not installed, using fallback")
+    except Exception as exc:
+        logger.warning("Local LLM request failed: %s", exc)
 
     # Fallback reply if no API key or failure
     safe_reply = f"Я упомянут! Вы написали: {text[:400]}"
