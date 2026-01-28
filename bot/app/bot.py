@@ -321,44 +321,85 @@ async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message:
+    if not update.message and not update.callback_query:
         return
-    if not context.args:
-        await update.message.reply_text("Usage: /player <tag>")
-        return
-    try:
-        tag = normalize_tag(context.args[0])
-    except InvalidTagError:
-        await update.message.reply_text("Invalid player tag format.")
-        return
+    
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    
+    # Determine the tag to fetch
+    tag = None
+    if context.args and context.args[0].lower() not in ("я", "me"):
+        # User provided a tag as argument
+        try:
+            tag = normalize_tag(context.args[0])
+        except InvalidTagError:
+            message = "Неверный формат тега игрока."
+            if update.callback_query:
+                await update.callback_query.answer()
+                await update.callback_query.edit_message_text(message)
+            else:
+                await update.message.reply_text(message)
+            return
+    else:
+        # User didn't provide tag or said "я" - use their binding
+        binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
+        if not binding:
+            message = "Вы не привязаны к игроку. Используйте /bind <tag> или /player <tag>"
+            if update.callback_query:
+                await update.callback_query.answer()
+                await update.callback_query.edit_message_text(message)
+            else:
+                await update.message.reply_text(message)
+            return
+        tag = binding.coc_player_tag
+    
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
             payload = await fetch_json(client, f"/player/{encode_tag(tag)}")
-            await update.message.reply_text(format_player(payload), parse_mode=ParseMode.MARKDOWN)
+            message = format_player(payload)
+            if update.callback_query:
+                await update.callback_query.answer()
+                await update.callback_query.edit_message_text(message, parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             logger.warning("Backend error: %s", exc)
             if status == 400:
-                message = "Invalid player tag format."
+                message = "Неверный формат тега игрока."
             elif status == 404:
-                message = "Player not found."
+                message = "Игрок не найден."
             elif status == 401:
-                message = "Backend token invalid. Please update the backend token."
+                message = "Токен бэкенда недействителен."
             elif status == 403:
-                message = "Backend IP is not whitelisted for Clash of Clans."
+                message = "IP бэкенда не в списке разрешенных для Clash of Clans."
             elif status == 429:
-                message = "Rate limit reached. Please try again later."
+                message = "Лимит запросов. Попробуйте позже."
             elif status == 504:
-                message = "Backend timed out contacting Clash of Clans."
+                message = "Бэкенд не смог соединиться с Clash of Clans."
             else:
-                message = "Backend error while fetching player data."
-            await update.message.reply_text(message)
+                message = "Ошибка при получении данных игрока."
+            if update.callback_query:
+                await update.callback_query.answer()
+                await update.callback_query.edit_message_text(message)
+            else:
+                await update.message.reply_text(message)
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
-            await update.message.reply_text("Backend is unreachable. Please try again later.")
+            message = "Бэкенд недоступен. Попробуйте позже."
+            if update.callback_query:
+                await update.callback_query.answer()
+                await update.callback_query.edit_message_text(message)
+            else:
+                await update.message.reply_text(message)
         except Exception:  # noqa: BLE001
             logger.exception("Unhandled error in /player")
-            await update.message.reply_text("Unexpected error occurred. Please try again.")
+            message = "Неожиданная ошибка. Попробуйте позже."
+            if update.callback_query:
+                await update.callback_query.answer()
+                await update.callback_query.edit_message_text(message)
+            else:
+                await update.message.reply_text(message)
 
 
 async def war(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -628,11 +669,9 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         elif callback_data == "menu_war":
             await war(update, context)
         elif callback_data == "menu_player":
-            # For player, we need to ask for tag
-            await update.callback_query.edit_message_text(
-                "Пожалуйста отправьте тег игрока (например: #ABC123DEF)\n"
-                "Или используйте /player <tag>"
-            )
+            # Show player info using the callback_query (will use binding if no args)
+            context.args = []  # Clear args to trigger binding lookup
+            await player(update, context)
         else:
             await update.callback_query.edit_message_text("Неизвестная команда")
     except Exception as e:
