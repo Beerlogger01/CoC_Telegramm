@@ -54,13 +54,30 @@ def format_player(payload: dict[str, Any]) -> str:
 
 
 def format_war(payload: dict[str, Any]) -> str:
-    return (
-        f"*Current War*\n"
-        f"State: {payload.get('state', 'N/A')}\n"
-        f"Team Size: {payload.get('teamSize', 'N/A')}\n"
-        f"Start: {payload.get('startTime', 'N/A')}\n"
-        f"End: {payload.get('endTime', 'N/A')}\n"
-    )
+    """Format war information with current status."""
+    state = payload.get('state', 'N/A')
+    team_size = payload.get('teamSize', 'N/A')
+    start_time = payload.get('startTime', 'N/A')
+    end_time = payload.get('endTime', 'N/A')
+    
+    msg = f"⚔️ *Война клана*\n"
+    msg += f"*Статус:* {state}\n"
+    msg += f"*Размер:* {team_size}v{team_size}\n"
+    msg += f"*Начало:* {start_time}\n"
+    msg += f"*Конец:* {end_time}\n"
+    
+    # Add current war status if in war
+    if state == "inWar":
+        clan_team = payload.get('clan', {})
+        opponent = payload.get('opponent', {})
+        clan_destruction = clan_team.get('destructionPercentage', 0)
+        opponent_destruction = opponent.get('destructionPercentage', 0)
+        
+        msg += f"\n*Текущий статус войны*\n"
+        msg += f"🏛️ *Наш клан:* {clan_team.get('name', 'N/A')} - {clan_destruction:.1f}% разрушено\n"
+        msg += f"⚔️ *Враги:* {opponent.get('name', 'N/A')} - {opponent_destruction:.1f}% разрушено\n"
+    
+    return msg
 
 
 def format_activity_report(payload: dict[str, Any]) -> str:
@@ -389,10 +406,6 @@ async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message and not update.callback_query:
         return
     
-    # Answer callback query if this is from a button click
-    if update.callback_query:
-        await update.callback_query.answer()
-    
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
             payload = await fetch_json(client, "/clan")
@@ -451,7 +464,6 @@ async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except InvalidTagError:
             message = "Неверный формат тега игрока."
             if update.callback_query:
-                await update.callback_query.answer()
                 await update.callback_query.edit_message_text(message)
             else:
                 await update.message.reply_text(message)
@@ -462,7 +474,6 @@ async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not binding:
             message = "Пожалуйста напишите ник игрока или напишите 'я'"
             if update.callback_query:
-                await update.callback_query.answer()
                 await update.callback_query.edit_message_text(message)
             else:
                 await update.message.reply_text(message)
@@ -474,7 +485,6 @@ async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             payload = await fetch_json(client, f"/player/{encode_tag(tag)}")
             message = format_player(payload)
             if update.callback_query:
-                await update.callback_query.answer()
                 await update.callback_query.edit_message_text(message, parse_mode=ParseMode.MARKDOWN)
             else:
                 await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
@@ -496,7 +506,6 @@ async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             else:
                 message = "Ошибка при получении данных игрока."
             if update.callback_query:
-                await update.callback_query.answer()
                 await update.callback_query.edit_message_text(message)
             else:
                 await update.message.reply_text(message)
@@ -504,7 +513,6 @@ async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning("Backend unreachable: %s", exc)
             message = "Бэкенд недоступен. Попробуйте позже."
             if update.callback_query:
-                await update.callback_query.answer()
                 await update.callback_query.edit_message_text(message)
             else:
                 await update.message.reply_text(message)
@@ -512,7 +520,6 @@ async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.exception("Unhandled error in /player")
             message = "Неожиданная ошибка. Попробуйте позже."
             if update.callback_query:
-                await update.callback_query.answer()
                 await update.callback_query.edit_message_text(message)
             else:
                 await update.message.reply_text(message)
@@ -1291,23 +1298,8 @@ async def clan_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
             clan_payload = await fetch_json(client, "/clan")
-            war_payload = await fetch_json(client, "/war")
             
             clan_msg = format_clan(clan_payload)
-            
-            war_state = war_payload.get("state", "notInWar")
-            if war_state == "inWar":
-                our_team = war_payload.get("clan", {})
-                enemy = war_payload.get("opponent", {})
-                our_destruction = our_team.get("destructionPercentage", 0)
-                enemy_destruction = enemy.get("destructionPercentage", 0)
-                
-                war_info = (
-                    f"\n*Current War Status*\n"
-                    f"Our Team: {our_team.get('name', 'N/A')} - {our_destruction:.1f}% destruction\n"
-                    f"Enemy: {enemy.get('name', 'N/A')} - {enemy_destruction:.1f}% destruction\n"
-                )
-                clan_msg += war_info
             
             await send_or_edit_message(update, clan_msg)
         except httpx.HTTPStatusError as exc:
