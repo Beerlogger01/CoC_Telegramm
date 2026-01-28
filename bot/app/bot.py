@@ -1545,7 +1545,7 @@ async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     try:
         msg = await send_or_edit_message(update, "⏳ Анализирую данные для следующей войны...")
         
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             response = await client.get(f"{settings.backend_url}/next-war")
             response.raise_for_status()
             data = response.json()
