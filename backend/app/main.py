@@ -16,6 +16,7 @@ from app.coc_client import (
     get_player,
     get_war,
     get_clan_members,
+    get_clan_activity_report,
 )
 from app.settings import settings, validate_settings
 
@@ -151,3 +152,26 @@ async def top_players(limit: int = 10, request: Request = None):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/activity-report")
+async def activity_report(request: Request):
+    """Get clan activity report."""
+    redis = get_redis(request)
+    client = get_http_client(request)
+    try:
+        return await get_clan_activity_report(client, redis)
+    except InvalidTagError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except UnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

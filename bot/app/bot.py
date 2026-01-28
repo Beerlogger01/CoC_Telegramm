@@ -4,7 +4,7 @@ import os
 import logging
 import re
 from urllib.parse import quote
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time
 from typing import Any
 
 import httpx
@@ -61,6 +61,51 @@ def format_war(payload: dict[str, Any]) -> str:
         f"Start: {payload.get('startTime', 'N/A')}\n"
         f"End: {payload.get('endTime', 'N/A')}\n"
     )
+
+
+def format_activity_report(payload: dict[str, Any]) -> str:
+    """Format clan activity report."""
+    clan_name = payload.get("clanName", "Clan")
+    clan_level = payload.get("clanLevel", "N/A")
+    
+    members = payload.get("members", {})
+    total = members.get("total", 0)
+    avg_trophies = members.get("avgTrophies", 0)
+    
+    war = payload.get("war", {})
+    war_state = war.get("state", "notInWar")
+    war_stars = war.get("stars", 0)
+    attacks_done = war.get("attacksDone", 0)
+    attacks_remaining = war.get("attacksRemaining", 0)
+    
+    activity = payload.get("activity", {})
+    most_active = activity.get("mostActive", [])
+    least_active = activity.get("leastActive", [])
+    
+    msg = f"📊 *Отчет об активности клана {clan_name}*\n\n"
+    msg += f"🏆 *Уровень клана:* {clan_level}\n"
+    msg += f"👥 *Участников:* {total}\n"
+    msg += f"⚔️ *Среднее трофеев:* {avg_trophies}\n\n"
+    
+    msg += f"🎖️ *Статус войны:* {war_state}\n"
+    if war_state == "inWar":
+        msg += f"⭐ *Звезд набрано:* {war_stars}\n"
+        msg += f"🔨 *Атак сделано:* {attacks_done}/{attacks_done + attacks_remaining}\n"
+    msg += "\n"
+    
+    msg += "🟢 *Самые активные:*\n"
+    for player in most_active[:5]:
+        name = player.get("name", "Unknown")
+        role = player.get("role", "member").replace("leader", "Лидер").replace("coLeader", "Co-Лидер").replace("member", "Участник")
+        msg += f"  • {name} ({role})\n"
+    
+    msg += "\n🔴 *Неактивные:*\n"
+    for player in least_active[:5]:
+        name = player.get("name", "Unknown")
+        role = player.get("role", "member").replace("leader", "Лидер").replace("coLeader", "Co-Лидер").replace("member", "Участник")
+        msg += f"  • {name} ({role})\n"
+    
+    return msg
 
 
 class InvalidTagError(ValueError):
@@ -983,6 +1028,37 @@ async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logger.warning("Failed to announce member user_id=%s error=%s", member.id, exc)
 
 
+async def weekly_activity_report_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send weekly activity report every Sunday to Lex."""
+    # Check if it's Sunday (weekday() = 6)
+    now = datetime.now(timezone.utc)
+    if now.weekday() != 6:  # Sunday
+        return
+    
+    # Get Lex's user ID from settings
+    if not settings.lex_user_id:
+        logger.warning("LEX_USER_ID not configured for weekly activity report")
+        return
+    
+    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+        try:
+            payload = await fetch_json(client, "/activity-report")
+            message = format_activity_report(payload)
+            await context.bot.send_message(
+                chat_id=settings.lex_user_id,
+                text=message,
+                parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=True,
+            )
+            logger.info("Weekly activity report sent to user %s", settings.lex_user_id)
+        except httpx.HTTPStatusError as exc:
+            logger.warning("Backend error fetching activity report: %s", exc)
+        except httpx.RequestError as exc:
+            logger.warning("Backend unreachable for activity report: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to send weekly activity report: %s", exc)
+
+
 async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not settings.war_reminder_enabled:
         return
@@ -1330,6 +1406,15 @@ async def main() -> None:
     await application.initialize()
     await application.start()
     await application.updater.start_polling()
+    
+    # Register weekly activity report after polling starts
+    if settings.lex_user_id:
+        application.job_queue.run_daily(
+            weekly_activity_report_job,
+            time=time(hour=10, minute=0, tzinfo=timezone.utc),
+            days=(6,),  # 6 = Sunday
+            name="weekly-activity-report",
+        )
 
     try:
         await asyncio.Event().wait()

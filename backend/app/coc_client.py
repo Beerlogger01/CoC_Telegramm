@@ -121,3 +121,86 @@ async def get_clan_members(client: httpx.AsyncClient, redis: Redis, limit: int =
         "clanTag": clan_data.get("tag"),
         "members": sorted_members[:limit]
     }
+
+
+async def get_clan_activity_report(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
+    """Get comprehensive clan activity report."""
+    clan_tag = normalize_tag(settings.coc_clan_tag)
+    
+    # Get clan data
+    clan_data = await get_clan(client, redis)
+    members = clan_data.get("memberList", [])
+    
+    # Get war data
+    war_data = await get_war(client, redis)
+    war_state = war_data.get("state", "notInWar")
+    
+    # Calculate stats
+    total_members = len(members)
+    total_trophies = sum(m.get("trophies", 0) for m in members)
+    avg_trophies = total_trophies // total_members if total_members > 0 else 0
+    
+    # Get war stars if in war
+    war_stars = 0
+    if war_state == "inWar":
+        war_members = war_data.get("clan", {}).get("members", [])
+        war_stars = sum(m.get("stars", 0) for m in war_members)
+    
+    # Get members sorted by last seen (activity)
+    members_by_activity = sorted(
+        members, 
+        key=lambda m: m.get("lastSeen", "2000-01-01T00:00:00.000Z"),
+        reverse=True
+    )
+    
+    # Most and least active
+    most_active = members_by_activity[:5] if members_by_activity else []
+    least_active = members_by_activity[-5:] if len(members_by_activity) > 5 else []
+    
+    # War attacks info
+    war_attacks_done = 0
+    war_attacks_remaining = 0
+    if war_state == "inWar":
+        war_members = war_data.get("clan", {}).get("members", [])
+        war_attacks_done = sum(1 for m in war_members if m.get("attacks", []))
+        war_attacks_remaining = len(war_members) - war_attacks_done
+    
+    return {
+        "clanName": clan_data.get("name"),
+        "clanTag": clan_data.get("tag"),
+        "clanLevel": clan_data.get("clanLevel"),
+        "members": {
+            "total": total_members,
+            "totalTrophies": total_trophies,
+            "avgTrophies": avg_trophies,
+        },
+        "war": {
+            "state": war_state,
+            "stars": war_stars,
+            "attacksDone": war_attacks_done,
+            "attacksRemaining": war_attacks_remaining,
+            "enemyName": war_data.get("opponent", {}).get("name") if war_state == "inWar" else None,
+        },
+        "activity": {
+            "mostActive": [
+                {
+                    "name": m.get("name"),
+                    "tag": m.get("tag"),
+                    "role": m.get("role"),
+                    "lastSeen": m.get("lastSeen"),
+                    "trophies": m.get("trophies"),
+                }
+                for m in most_active
+            ],
+            "leastActive": [
+                {
+                    "name": m.get("name"),
+                    "tag": m.get("tag"),
+                    "role": m.get("role"),
+                    "lastSeen": m.get("lastSeen"),
+                    "trophies": m.get("trophies"),
+                }
+                for m in least_active
+            ],
+        }
+    }
