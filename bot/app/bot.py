@@ -758,6 +758,81 @@ async def grouplink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show user's full CoC profile from binding."""
+    if not update.message or not update.effective_user:
+        return
+    if not ensure_private_chat(update):
+        return
+    
+    try:
+        # Check if user is bound
+        storage: BindingsStorage = context.application.bot_data["storage"]
+        binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
+        
+        if not binding:
+            await update.message.reply_text(
+                "❌ Вы не привязаны к боту. Используйте /bind чтобы привязаться."
+            )
+            return
+        
+        # Fetch player info from API
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            try:
+                path = f"/player/{quote(binding.coc_player_tag)}"
+                response = await client.get(build_url(path))
+                response.raise_for_status()
+                player_data = response.json()
+            except httpx.HTTPStatusError:
+                await update.message.reply_text(
+                    "❌ Ошибка при получении профиля. Попробуйте позже."
+                )
+                return
+        
+        # Format player profile
+        name = player_data.get("name", "Unknown")
+        tag = html.escape(player_data.get("tag", "N/A"))
+        th_level = player_data.get("townHallLevel", "?")
+        exp_level = player_data.get("expLevel", "?")
+        trophies = player_data.get("trophies", 0)
+        best_trophies = player_data.get("bestTrophies", 0)
+        troops = player_data.get("troops", [])
+        spells = player_data.get("spells", [])
+        
+        profile_text = (
+            f"👤 *Твой Профиль*\n\n"
+            f"🎮 *Имя:* {html.escape(name)}\n"
+            f"🏷️ *Тег:* {tag}\n"
+            f"🏛️ *Town Hall:* {th_level}\n"
+            f"⭐ *Уровень опыта:* {exp_level}\n"
+            f"🏆 *Трофеи:* {trophies} (макс: {best_trophies})\n"
+        )
+        
+        if troops:
+            profile_text += f"\n🪖 *Войска:* {len(troops)} видов\n"
+        if spells:
+            profile_text += f"✨ *Заклинания:* {len(spells)} видов\n"
+        
+        # Get clan info
+        clan = player_data.get("clan", {})
+        if clan:
+            clan_name = clan.get("name", "Unknown")
+            clan_tag = clan.get("tag", "N/A")
+            profile_text += f"\n🏰 *Клан:* {html.escape(clan_name)}\n"
+            profile_text += f"🏷️ *Тег клана:* {html.escape(clan_tag)}\n"
+        
+        await update.message.reply_text(
+            profile_text,
+            parse_mode=ParseMode.MARKDOWN,
+            disable_web_page_preview=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to show profile: %s", exc)
+        await update.message.reply_text(
+            "❌ Ошибка при отображении профиля. Попробуйте позже."
+        )
+
+
 
 async def settings_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
@@ -810,16 +885,61 @@ async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 )
             continue
         
-        # Member is bound - welcome them
+        # Member is bound - welcome them with CoC info
         mention = format_mention(member.id, member.full_name)
         player_tag = html.escape(binding.coc_player_tag)
-        message = f"✅ {mention} присоединился как {player_tag}"
+        
+        # Try to fetch player info for nickname
+        coc_name = None
         try:
-            await update.message.reply_text(
+            async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+                path = f"/player/{quote(binding.coc_player_tag)}"
+                response = await client.get(build_url(path))
+                if response.status_code == 200:
+                    player_data = response.json()
+                    coc_name = player_data.get("name", "")
+        except Exception:  # noqa: BLE001
+            pass  # Fallback if API fails
+        
+        # Create welcome message
+        if coc_name:
+            message = (
+                f"✅ {mention}\n"
+                f"🎮 *CoC Ник:* {html.escape(coc_name)}\n"
+                f"🏷️ *Тег:* {player_tag}\n"
+                f"Добро пожаловать в клан! 🎉"
+            )
+        else:
+            message = f"✅ {mention} присоединился как {player_tag}"
+        
+        try:
+            reply_msg = await update.message.reply_text(
                 message,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
+            # Pin the welcome message for a few seconds
+            try:
+                await context.bot.pin_chat_message(
+                    chat_id=update.effective_chat.id,
+                    message_id=reply_msg.message_id,
+                    disable_notification=True,
+                )
+                # Unpin after 30 seconds
+                async def unpin_later():
+                    await asyncio.sleep(30)
+                    try:
+                        await context.bot.unpin_chat_message(
+                            chat_id=update.effective_chat.id,
+                            message_id=reply_msg.message_id,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                
+                # Run unpin in background
+                asyncio.create_task(unpin_later())
+            except Exception:  # noqa: BLE001
+                pass  # Pinning not critical
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to announce member user_id=%s error=%s", member.id, exc)
 
@@ -1108,6 +1228,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("mytag", mytag))
     application.add_handler(CommandHandler("chatid", chatid))
     application.add_handler(CommandHandler("grouplink", grouplink))
+    application.add_handler(CommandHandler("profile", profile))
     application.add_handler(CommandHandler("settings", settings_info))
     application.add_handler(CallbackQueryHandler(bind_start, pattern="^bind_start$"))
     application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
