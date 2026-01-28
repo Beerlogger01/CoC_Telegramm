@@ -33,13 +33,23 @@ TAG_EXTRACT_PATTERN = re.compile(r"#?[0289PYLQGRJCUV]{4,}")
 
 
 def format_clan(payload: dict[str, Any]) -> str:
-    return (
+    """Format clan information with capital details."""
+    msg = (
         f"*{payload.get('name', 'Clan')}*\n"
-        f"Tag: `{payload.get('tag', 'N/A')}`\n"
-        f"Level: {payload.get('clanLevel', 'N/A')}\n"
-        f"Members: {payload.get('members', 'N/A')}\n"
-        f"War League: {payload.get('warLeague', {}).get('name', 'N/A')}\n"
+        f"🏷️ Tag: `{payload.get('tag', 'N/A')}`\n"
+        f"📊 Level: {payload.get('clanLevel', 'N/A')}\n"
+        f"👥 Members: {payload.get('members', 'N/A')}\n"
+        f"⚔️ War League: {payload.get('warLeague', {}).get('name', 'N/A')}\n"
     )
+    
+    # Add capital info if available
+    capital = payload.get('clanCapital', {})
+    if capital:
+        capital_name = capital.get('name', 'Capital')
+        capital_level = capital.get('capitalHallLevel', 'N/A')
+        msg += f"\n🏛️ *Capital:* {capital_name} (Hall Level: {capital_level})\n"
+    
+    return msg
 
 
 def format_player(payload: dict[str, Any]) -> str:
@@ -337,7 +347,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         keyboard = [
             [
                 InlineKeyboardButton("👥 Топ игроков", callback_data="menu_topplayers"),
-                InlineKeyboardButton("⚔️ Статистика клана", callback_data="menu_clanstats"),
+                InlineKeyboardButton("🏛️ Игры кланов", callback_data="menu_raids"),
             ],
             [
                 InlineKeyboardButton("🏘️ Информация о клане", callback_data="menu_clan"),
@@ -785,10 +795,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if callback_data == "menu_topplayers":
             context.args = []
             await top_players(update, context)
-        elif callback_data == "menu_clanstats":
-            await clan_stats(update, context)
         elif callback_data == "menu_clan":
             await clan(update, context)
+        elif callback_data == "menu_raids":
+            await clan_raids(update, context)
         elif callback_data == "menu_war":
             await war(update, context)
         elif callback_data == "menu_player":
@@ -1291,25 +1301,64 @@ async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await send_or_edit_message(update, "Unexpected error occurred.")
 
 
-async def clan_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show clan statistics and war info."""
+async def clan_raids(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show clan raids (capital games) status."""
     if not update.message and not update.callback_query:
         return
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
-            clan_payload = await fetch_json(client, "/clan")
+            payload = await fetch_json(client, "/raids")
             
-            clan_msg = format_clan(clan_payload)
+            # If no data or no raids info, send message
+            if not payload or "currentRaid" not in payload:
+                message = "ℹ️ Информация об играх кланов недоступна."
+                await send_or_edit_message(update, message)
+                return
             
-            await send_or_edit_message(update, clan_msg)
+            current_raid = payload.get("currentRaid")
+            if not current_raid:
+                message = "ℹ️ Игры кланов не проводятся в данный момент."
+                await send_or_edit_message(update, message)
+                return
+            
+            # Format raid info
+            state = current_raid.get("state", "unknown")
+            capital_name = current_raid.get("capitalName", "Capital")
+            start_time = current_raid.get("startTime", "N/A")
+            end_time = current_raid.get("endTime", "N/A")
+            
+            if state == "ongoing":
+                # Show current points
+                clan_capital = current_raid.get("clan", {})
+                resources = clan_capital.get("resources", [])
+                
+                msg = f"🏛️ *Игры кланов: {capital_name}*\n\n"
+                msg += f"*Статус:* Идут в данный момент\n"
+                msg += f"*Начало:* {start_time}\n"
+                msg += f"*Конец:* {end_time}\n"
+                
+                if resources:
+                    msg += f"\n*Ресурсы клана:*\n"
+                    for resource in resources:
+                        resource_name = resource.get("name", "Resource")
+                        amount = resource.get("amount", 0)
+                        msg += f"• {resource_name}: {amount}\n"
+            else:
+                # Show days until next
+                msg = f"🏛️ *Игры кланов: {capital_name}*\n\n"
+                msg += f"*Статус:* Не проводятся\n"
+                msg += f"*Начало:* {start_time}\n"
+                msg += f"*Конец:* {end_time}\n"
+            
+            await send_or_edit_message(update, msg)
         except httpx.HTTPStatusError as exc:
             logger.warning("Backend error: %s", exc)
-            await send_or_edit_message(update, "Failed to fetch clan stats.")
+            await send_or_edit_message(update, "ℹ️ Информация об играх кланов недоступна.")
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
             await send_or_edit_message(update, "Backend is unreachable.")
         except Exception:  # noqa: BLE001
-            logger.exception("Unhandled error in /clan-stats")
+            logger.exception("Unhandled error in /clan-raids")
             await send_or_edit_message(update, "Unexpected error occurred.")
 
 

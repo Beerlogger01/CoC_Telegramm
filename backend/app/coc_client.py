@@ -204,3 +204,43 @@ async def get_clan_activity_report(client: httpx.AsyncClient, redis: Redis) -> d
             ],
         }
     }
+
+async def get_clan_raids(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
+    """Get clan raids (capital games) information."""
+    clan_tag = normalize_tag(settings.coc_clan_tag)
+    cache_key = f"raids:{clan_tag}"
+    url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/capitalraidseasons"
+    
+    try:
+        data = await fetch_with_cache(client, redis, cache_key, url)
+        
+        # Get current raid if available
+        items = data.get("items", [])
+        if not items:
+            return {"currentRaid": None}
+        
+        # Most recent raid is first
+        current = items[0]
+        state = current.get("state", "unknown")
+        
+        # Parse dates
+        start_time = current.get("startTime", "N/A")
+        end_time = current.get("endTime", "N/A")
+        
+        raid_info = {
+            "state": state,
+            "capitalName": "Capital Raid",
+            "startTime": start_time,
+            "endTime": end_time,
+        }
+        
+        # If ongoing, include resource details
+        if state == "ongoing":
+            clan_capital = current.get("clan", {})
+            resources = clan_capital.get("resources", [])
+            raid_info["clan"] = {"resources": resources}
+        
+        return {"currentRaid": raid_info}
+    except Exception:
+        logger.exception("Failed to get clan raids")
+        return {"currentRaid": None}
