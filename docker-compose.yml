@@ -21,12 +21,8 @@ services:
       context: ./bot
     env_file:
       - .env
-    environment:
-      - LOCAL_MODEL=tinyllama
     depends_on:
       - backend
     restart: unless-stopped
     volumes:
       - ./data:/data
-      - ./models:/models
-      - ~/.cache/gpt4all:/root/.cache/gpt4all

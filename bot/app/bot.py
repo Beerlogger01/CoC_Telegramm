@@ -713,31 +713,98 @@ async def log_any_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.info("Command received: %s from user %s", update.message.text, update.effective_user.id)
 
 
+async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show top 10 clan members by trophies."""
+    if not update.message:
+        return
+    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+        try:
+            limit = 10
+            if context.args and context.args[0].isdigit():
+                limit = min(int(context.args[0]), 50)
+            
+            payload = await fetch_json(client, f"/top-players?limit={limit}")
+            clan_name = payload.get("clanName", "Clan")
+            members = payload.get("members", [])
+            
+            lines = [f"*Top {len(members)} Players in {clan_name}*\n"]
+            for i, member in enumerate(members, 1):
+                name = member.get("name", "Unknown")
+                trophies = member.get("trophies", 0)
+                th = member.get("townHallLevel", "?")
+                lines.append(f"{i}. {name} - {trophies} 🏆 (TH{th})")
+            
+            message = "\n".join(lines)
+            await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+        except httpx.HTTPStatusError as exc:
+            logger.warning("Backend error: %s", exc)
+            await update.message.reply_text("Failed to fetch top players. Try again later.")
+        except httpx.RequestError as exc:
+            logger.warning("Backend unreachable: %s", exc)
+            await update.message.reply_text("Backend is unreachable.")
+        except Exception:  # noqa: BLE001
+            logger.exception("Unhandled error in /top-players")
+            await update.message.reply_text("Unexpected error occurred.")
+
+
+async def clan_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show clan statistics and war info."""
+    if not update.message:
+        return
+    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+        try:
+            clan_payload = await fetch_json(client, "/clan")
+            war_payload = await fetch_json(client, "/war")
+            
+            clan_msg = format_clan(clan_payload)
+            
+            war_state = war_payload.get("state", "notInWar")
+            if war_state == "inWar":
+                our_team = war_payload.get("clan", {})
+                enemy = war_payload.get("opponent", {})
+                our_destruction = our_team.get("destructionPercentage", 0)
+                enemy_destruction = enemy.get("destructionPercentage", 0)
+                
+                war_info = (
+                    f"\n*Current War Status*\n"
+                    f"Our Team: {our_team.get('name', 'N/A')} - {our_destruction:.1f}% destruction\n"
+                    f"Enemy: {enemy.get('name', 'N/A')} - {enemy_destruction:.1f}% destruction\n"
+                )
+                clan_msg += war_info
+            
+            await update.message.reply_text(clan_msg, parse_mode=ParseMode.MARKDOWN)
+        except httpx.HTTPStatusError as exc:
+            logger.warning("Backend error: %s", exc)
+            await update.message.reply_text("Failed to fetch clan stats.")
+        except httpx.RequestError as exc:
+            logger.warning("Backend unreachable: %s", exc)
+            await update.message.reply_text("Backend is unreachable.")
+        except Exception:  # noqa: BLE001
+            logger.exception("Unhandled error in /clan-stats")
+            await update.message.reply_text("Unexpected error occurred.")
+
+
 async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reply with AI-generated text when bot is mentioned or replied-to using GPT4All."""
+    """Reply with AI-generated text when bot is mentioned or replied-to using Groq API or fallback."""
     if not update.message or not update.message.text:
         logger.debug("ai_reply_handler: no message or text")
         return
 
     text = update.message.text
-    print(f"[AI_HANDLER] processing text: {text[:100]}", flush=True)
     logger.debug(f"ai_reply_handler: processing text: {text[:100]}")
     
     # Detect if bot is mentioned
     bot_username = None
     try:
         bot_username = (context.bot.username or "").lower()
-        print(f"[AI_HANDLER] bot username = {bot_username}", flush=True)
         logger.debug(f"ai_reply_handler: bot username = {bot_username}")
     except Exception as e:
-        print(f"[AI_HANDLER] failed to get bot username: {e}", flush=True)
         logger.debug(f"ai_reply_handler: failed to get bot username: {e}")
         bot_username = os.getenv("BOT_USERNAME", "").lower()
 
     mentioned = False
     if bot_username and f"@{bot_username}" in (text or "").lower():
         mentioned = True
-        print(f"[AI_HANDLER] BOT MENTIONED DIRECTLY!", flush=True)
         logger.info(f"ai_reply_handler: bot mentioned directly in text")
     
     # Check if replying to bot's message
@@ -749,31 +816,56 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
             if replied_to_bot:
                 mentioned = True
-                print(f"[AI_HANDLER] REPLYING TO BOT MESSAGE!", flush=True)
                 logger.info(f"ai_reply_handler: replying to bot message")
         except Exception as e:
-            print(f"[AI_HANDLER] error checking reply: {e}", flush=True)
             logger.debug(f"ai_reply_handler: error checking reply: {e}")
 
     if not mentioned:
-        print(f"[AI_HANDLER] bot not mentioned, returning", flush=True)
         logger.debug("ai_reply_handler: bot not mentioned, returning")
         return
 
-    print(f"[AI_HANDLER] STARTING AI REPLY! Text: {text[:100]}", flush=True)
     logger.info(f"ai_reply_handler: attempting AI reply for text: {text[:100]}")
     
-    # Try OpenAI first if key is set
+    # Try Groq API (free, fast)
+    groq_key = os.getenv("GROQ_API_KEY")
+    if groq_key:
+        logger.info("ai_reply_handler: attempting Groq API")
+        try:
+            from groq import Groq
+            client = Groq(api_key=groq_key)
+            
+            # Use the fastest free model available
+            response = client.chat.completions.create(
+                model="mixtral-8x7b-32768",  # Free tier model
+                messages=[
+                    {"role": "system", "content": "You are a helpful Telegram bot assistant. Respond concisely in the same language as the user."},
+                    {"role": "user", "content": text}
+                ],
+                max_tokens=256,
+                temperature=0.7,
+            )
+            
+            reply = response.choices[0].message.content.strip()
+            if reply:
+                logger.info(f"ai_reply_handler: Groq reply: {reply[:100]}")
+                await update.message.reply_text(reply)
+                return
+        except Exception as exc:
+            logger.warning(f"ai_reply_handler: Groq failed: {exc}")
+
+    # Try OpenAI if key is set
     openai_key = os.getenv("OPENAI_API_KEY")
     if openai_key:
-        print(f"[AI_HANDLER] attempting OpenAI", flush=True)
         logger.info("ai_reply_handler: attempting OpenAI")
         try:
             async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
                 headers = {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"}
                 body = {
                     "model": "gpt-3.5-turbo",
-                    "messages": [{"role": "user", "content": text}],
+                    "messages": [
+                        {"role": "system", "content": "You are a helpful Telegram bot assistant. Respond concisely."},
+                        {"role": "user", "content": text}
+                    ],
                     "max_tokens": 256,
                 }
                 resp = await client.post("https://api.openai.com/v1/chat/completions", json=body, headers=headers)
@@ -781,63 +873,13 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 data = resp.json()
                 reply = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
                 if reply:
-                    print(f"[AI_HANDLER] OpenAI SUCCESS: {reply[:100]}", flush=True)
                     logger.info(f"ai_reply_handler: OpenAI reply: {reply[:100]}")
                     await update.message.reply_text(reply)
                     return
         except Exception as exc:
-            print(f"[AI_HANDLER] OpenAI failed: {exc}", flush=True)
             logger.warning(f"ai_reply_handler: OpenAI failed: {exc}")
 
-    # Try local GPT4All
-    print(f"[AI_HANDLER] ATTEMPTING GPT4ALL", flush=True)
-    logger.info("ai_reply_handler: attempting GPT4All")
-    try:
-        loop = asyncio.get_event_loop()
-        
-        def generate_with_gpt4all():
-            print(f"[AI_HANDLER] [THREAD] Importing GPT4All", flush=True)
-            from gpt4all import GPT4All
-            
-            model_name = os.getenv("LOCAL_MODEL", "tinyllama")
-            print(f"[AI_HANDLER] [THREAD] Loading model: {model_name}", flush=True)
-            logger.info(f"ai_reply_handler: loading GPT4All model: {model_name}")
-            
-            # Load model (blocking, will run in executor)
-            # allow_download=True so first use will download if needed
-            # Note: tinyllama is ~600MB, fits in memory
-            llm = GPT4All(model_name, device="cpu", allow_download=True, verbose=False)
-            print(f"[AI_HANDLER] [THREAD] MODEL LOADED! Generating...", flush=True)
-            logger.info(f"ai_reply_handler: model loaded, generating response")
-            
-            # Generate response
-            response = llm.generate(text, max_tokens=256, temp=0.7)
-            print(f"[AI_HANDLER] [THREAD] GENERATE RETURNED: {type(response)} = {repr(response[:150] if response else 'EMPTY')}", flush=True)
-            return response
-        
-        # Run in executor to not block event loop
-        response = await loop.run_in_executor(None, generate_with_gpt4all)
-        print(f"[AI_HANDLER] Response from executor: {repr(response[:150] if response else 'EMPTY')}", flush=True)
-        logger.info(f"ai_reply_handler: response generated: {response[:150] if response else 'EMPTY'}")
-        
-        if response and response.strip():
-            final_reply = response.strip()[:500]
-            print(f"[AI_HANDLER] SENDING AI REPLY: {final_reply[:100]}", flush=True)
-            logger.info(f"ai_reply_handler: sending reply: {final_reply[:100]}")
-            await update.message.reply_text(final_reply)
-            return
-        else:
-            print(f"[AI_HANDLER] EMPTY RESPONSE FROM GPT4ALL!", flush=True)
-            logger.warning("ai_reply_handler: empty response from GPT4All")
-    except ImportError as e:
-        print(f"[AI_HANDLER] gpt4all not installed: {e}", flush=True)
-        logger.warning(f"ai_reply_handler: gpt4all not installed: {e}")
-    except Exception as exc:
-        print(f"[AI_HANDLER] GPT4ALL EXCEPTION: {exc}", flush=True)
-        logger.error(f"ai_reply_handler: GPT4All failed: {exc}", exc_info=True)
-
     # Fallback
-    print(f"[AI_HANDLER] USING FALLBACK", flush=True)
     logger.warning("ai_reply_handler: using fallback reply")
     safe_reply = f"Я упомянут! Вы написали: {text[:400]}"
     await update.message.reply_text(safe_reply)
@@ -869,6 +911,8 @@ async def main() -> None:
     application.add_handler(MessageHandler(filters.COMMAND, log_any_command), group=-1)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("clan", clan))
+    application.add_handler(CommandHandler("clan-stats", clan_stats))
+    application.add_handler(CommandHandler("top-players", top_players))
     application.add_handler(CommandHandler("player", player))
     application.add_handler(CommandHandler("war", war))
     application.add_handler(CommandHandler("ping", ping))

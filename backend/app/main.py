@@ -15,6 +15,7 @@ from app.coc_client import (
     get_clan,
     get_player,
     get_war,
+    get_clan_members,
 )
 from app.settings import settings, validate_settings
 
@@ -109,6 +110,30 @@ async def war(request: Request):
         return await get_war(client, redis)
     except InvalidTagError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except UnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/top-players")
+async def top_players(limit: int = 10, request: Request = None):
+    """Get top clan members by trophies."""
+    request = request or Request({})
+    redis = get_redis(request)
+    client = get_http_client(request)
+    try:
+        return await get_clan_members(client, redis, limit=min(limit, 50))
+    except InvalidTagError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except UnauthorizedError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except ForbiddenError as exc:

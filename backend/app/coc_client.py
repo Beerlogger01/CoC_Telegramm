@@ -108,3 +108,16 @@ async def get_war(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
     cache_key = f"war:{clan_tag}"
     url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/currentwar"
     return await fetch_with_cache(client, redis, cache_key, url)
+
+
+async def get_clan_members(client: httpx.AsyncClient, redis: Redis, limit: int = 50) -> dict[str, Any]:
+    """Get clan members, sorted by trophies."""
+    clan_data = await get_clan(client, redis)
+    members = clan_data.get("memberList", [])
+    # Sort by trophies descending
+    sorted_members = sorted(members, key=lambda m: m.get("trophies", 0), reverse=True)
+    return {
+        "clanName": clan_data.get("name"),
+        "clanTag": clan_data.get("tag"),
+        "members": sorted_members[:limit]
+    }
