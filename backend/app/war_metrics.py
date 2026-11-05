@@ -55,11 +55,11 @@ def relative_strength(players: list[dict[str, Any]]) -> dict[str, dict]:
         leagues = [x for p in members if (x := _league_index(str(p.get("league") or ""))) is not None]
         for player in members:
             pairs = (
-                (35, _peer_percentile(float(player["expLevel"]), experience)
+                (15, _peer_percentile(float(player["expLevel"]), experience)
                  if isinstance(player.get("expLevel"), (int, float)) else None),
-                (40, _peer_percentile(float(player["heroesLevel"]), heroes)
+                (55, _peer_percentile(float(player["heroesLevel"]), heroes)
                  if isinstance(player.get("heroesLevel"), (int, float)) else None),
-                (15, _peer_percentile(float(player["heroEquipmentScore"]), equipment)
+                (20, _peer_percentile(float(player["heroEquipmentScore"]), equipment)
                  if isinstance(player.get("heroEquipmentScore"), (int, float)) else None),
                 (10, _peer_percentile(_league_index(str(player.get("league") or "")), leagues)),
             )
@@ -69,7 +69,7 @@ def relative_strength(players: list[dict[str, Any]]) -> dict[str, dict]:
                 "relativeStrength": score,
                 "strengthCoverage": sum(weight for weight, _ in known),
                 "townHallPeers": len(members),
-                "method": "TH-matched clan peers; 35% experience, 40% heroes, 15% equipment, 10% league",
+                "method": "TH-matched clan peers; 15% experience, 55% heroes, 20% equipment, 10% league",
             }
     return out
 

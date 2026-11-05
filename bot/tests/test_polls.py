@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from telegram.error import TelegramError
+from telegram.error import TelegramError, BadRequest
 
 from app.polls import PollController, PollStore, duration_seconds, poll_text
 
@@ -28,20 +28,39 @@ def test_votes_change_without_duplicates_and_deadlines_survive_restart(tmp_path)
     assert not restored.due(now=300)
 
 
-def test_result_delivery_retries_after_failure_and_announces_once(tmp_path):
-    store = PollStore(str(tmp_path / "poll.db"))
+def test_ambiguous_result_delivery_never_duplicates_on_restart(tmp_path):
+    path = str(tmp_path / "poll.db")
+    store = PollStore(path)
     poll_id = store.create(-100, 1, "<КВ & ЛВК>", ["A", "B"], 1)
     store.attach(poll_id, 9)
     controller = PollController(store, -100, None, None)
-    bot = SimpleNamespace(edit_message_text=AsyncMock(), send_message=AsyncMock(side_effect=TelegramError("offline")))
+    bot = SimpleNamespace(edit_message_text=AsyncMock(), send_message=AsyncMock(side_effect=TelegramError("timeout after acceptance")))
     context = SimpleNamespace(bot=bot)
+    asyncio.run(controller.finish_due(context))
+    assert not PollStore(path).due()
+    assert "&lt;КВ &amp; ЛВК&gt;" in bot.edit_message_text.call_args.kwargs["text"]
+    assert "Никто не проголосовал" in bot.edit_message_text.call_args.kwargs["text"]
+    bot.send_message.side_effect = None
+    asyncio.run(PollController(PollStore(path), -100, None, None).finish_due(context))
+    assert bot.send_message.await_count == 1
+
+
+def test_result_edit_retries_but_definitive_rejection_releases_send_claim(tmp_path):
+    store = PollStore(str(tmp_path / "poll.db"))
+    poll_id = store.create(-100, 1, "Question", ["A", "B"], 1)
+    store.attach(poll_id, 9)
+    controller = PollController(store, -100, None, None)
+    bot = SimpleNamespace(edit_message_text=AsyncMock(side_effect=TelegramError("offline")), send_message=AsyncMock())
+    context = SimpleNamespace(bot=bot)
+    asyncio.run(controller.finish_due(context))
+    assert store.due() and bot.send_message.await_count == 0
+    bot.edit_message_text.side_effect = BadRequest("message is not modified")
+    bot.send_message.side_effect = BadRequest("chat not found")
     asyncio.run(controller.finish_due(context))
     assert store.due()
     bot.send_message.side_effect = None
     asyncio.run(controller.finish_due(context))
     assert not store.due()
-    assert "&lt;КВ &amp; ЛВК&gt;" in bot.send_message.call_args.kwargs["text"]
-    assert "Никто не проголосовал" in bot.send_message.call_args.kwargs["text"]
     asyncio.run(controller.finish_due(context))
     assert bot.send_message.await_count == 2
 

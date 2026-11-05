@@ -1,6 +1,6 @@
 # Clash of Clans Telegram Home Server
 
-## Recommended: separate Home Assistant App (v0.2.3)
+## Recommended: separate Home Assistant App (v0.3.0)
 
 This repository installs as a standalone **CoC Telegram Bot** Home Assistant add-on, separate from any smart-home Telegram bot. See [add-on setup, configuration and role model](coc_telegram/DOCS.md). Install the **Beerlogger01** repository in Home Assistant; changes to staging PRs in Alexey3476 are not installed until merged into Beerlogger01/main and the GHCR image is published.
 
@@ -19,23 +19,28 @@ Clash of Clans API
     ↓
 ```
 
-## Version 0.2.3
+## Version 0.3.0 — clan headquarters
 
-CWL shows seven rounds, the current group table and placement by total stars
-(attack stars + 10 per completed win, then total destruction). Incomplete API
-results are marked provisional. CWL recommendations always use 15 players;
-regular war supports 5–50 in steps of five via `/nextwar war 30` or the size picker.
-`/rating war` and `/rating cwl` show the full paginated clan ranking.
-Experience level now contributes to same-TH development, alongside home-village
-heroes, equipment and current ranked league. CWL gives greater weight to TH
-strength. Buildings, defenses and live online status remain unavailable through
-the public API; experience is only a proxy for development.
+A consistent Telegram menu now links wars, saved lineups/readiness, ratings,
+player cards, personal accounts and clan polls. Lists, equipment and development
+changes are paginated. Buttons belong to their creator and current screen;
+stale, repeated and foreign callbacks cannot change a newer selection.
 
-Verified CoC leaders/co-leaders can create a vote in private with `/poll`:
-question → 2–10 answers → duration → preview → publish to the configured clan
-group. One changeable ballot per Telegram user, with automatic results after the
-deadline; published polls and ballots survive restarts. See
-[release notes and limits](coc_telegram/DOCS.md#version-023).
+- `/lineup`: captains create a named war collection, choose the KV size, edit
+  the saved lineup, and publish it to the group. CWL always uses 15 players.
+- `/ready`: answer separately for each verified alt: ready, unavailable or heroes
+  upgrading. Each new collection starts without previous readiness answers.
+- `/rating war|cwl`: full clan ranking with a clickable explanation of each score.
+- `/history`: saved completed wars and attacks against lower/equal/higher THs.
+- `/cwl`: seven individually accessible rounds and placement by total stars;
+  unavailable rounds do not renumber later wars.
+- `/poll`: question, editable answers, duration, preview and timed results.
+  Published polls can be browsed from the clan menu.
+
+Experience and league remain additional signals, not measurements of defenses
+or proof of attack skill. A missed CWL round is flagged for leadership review,
+without an automatic season-long ban. See [current rules and delivery limits](coc_telegram/DOCS.md)
+and the [offline interface QA report](docs/interface-qa-0.3.0.md).
 
 ## Features
 
@@ -114,7 +119,12 @@ Use these commands inside a private chat with the bot (or press the “Прив�
 
 The clan group must be private. Add the bot as an admin with permission to invite users and remove unbound members. After a successful bind, the bot issues a short-lived, single-use invite link and verifies new members on join.
 
-When a war is active and the war end time is within the reminder window, the bot checks the clan war roster for members with 0 attacks used. If a bound player is found, the bot posts a single reminder message mentioning each bound user by ID. Each user is cooled down for one hour between reminders. Configure behavior with:
+During an active war, reminders include **every remaining attack**, including
+1/2 attacks used in regular wars. All alts belonging to one Telegram user are
+listed under a single mention. Persistent claims allow at most one reminder per
+war/owner in the configured window and one in the last 30 minutes; restarting
+the bot does not repeat them. An ambiguous Telegram delivery error is not
+retried automatically. Configure behavior with:
 
 - `BINDINGS_DB_PATH` (default `/data/bindings.db`)
 - `WAR_REMINDER_ENABLED` (true/false)
@@ -159,9 +169,7 @@ sudo systemctl start coc-telegram.service
 
 ## Troubleshooting
 
-- **Verify env values inside containers**:
-  - `docker compose exec backend env | grep -E 'COC_TOKEN|COC_CLAN_TAG|REDIS_URL'`
-  - `docker compose exec bot env | grep -E 'TELEGRAM_BOT_TOKEN|BACKEND_URL|BINDINGS_DB_PATH|CLAN_GROUP_ID|INVITE_TTL_MINUTES|ENFORCE_CLAN_MEMBERSHIP|WAR_REMINDER'`
+- **Verify configuration**: check required options in Home Assistant or your local `.env`; do not paste tokens or complete environment dumps into logs or chats.
 - **401/403 from CoC API**: This often happens when `COC_TOKEN` is empty/invalid or the IP is not whitelisted. Confirm the token value exists in `.env` and is restricted to the correct public IP.
 - **CoC token rejected**: Ensure the token is IP-restricted to your home server's public IP, and that you are not running from a different network. Invalid tokens will return 403/404 or 429 from the backend.
 - **Docker networking**: Use `BACKEND_URL=http://backend:8000` inside Docker; `localhost` will refer to the bot container itself.

@@ -1,6 +1,8 @@
 """Telegram formatting regression based on the actual user traceback."""
 import asyncio
 from html.parser import HTMLParser
+from types import SimpleNamespace
+from app.navigation import navigator
 
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
@@ -58,11 +60,15 @@ def test_parse_error_retries_as_unformatted_text_without_crashing():
             self.modes.append(parse_mode)
             if parse_mode is not None:
                 raise BadRequest("Can't parse entities: can't find end of the entity")
-            return "delivered"
+            return SimpleNamespace(message_id=1)
     class Update:
         message = Message()
+        effective_message = message
+        effective_user = SimpleNamespace(id=1)
+        effective_chat = SimpleNamespace(id=1)
         callback_query = None
+    navigator.reset()
     update = Update()
     result = asyncio.run(send_or_edit_message(update, "*broken", parse_mode=ParseMode.MARKDOWN))
-    assert result == "delivered"
+    assert result.message_id == 1
     assert update.message.modes == [ParseMode.MARKDOWN, None]

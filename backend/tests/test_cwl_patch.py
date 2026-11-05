@@ -155,3 +155,27 @@ def test_legend_tiers_remain_above_modern_numeric_leagues():
     from app.war_metrics import _league_index
     assert _league_index("Legend League I") > _league_index("Legend League II") > _league_index("Legend League III") > _league_index("Electro League 33")
     assert _league_index("Titan 25") == _league_index("Titan League 25")
+
+
+def test_missing_middle_cwl_war_never_renumbers_later_round(monkeypatch):
+    group={'state':'inWar','rounds':[{'warTags':['#P']},{'warTags':['#Y']},{'warTags':['#L']}]+[{'warTags':['#0']}]*4}
+    async def fetch(client,cache,key,url):
+        if 'leaguegroup' in url: return group
+        tag='#'+url.rsplit('%23',1)[-1]
+        if tag=='#Y': raise coc_client.NotFoundError()
+        return {'state':'warEnded','startTime':tag,'clan':{'tag':'#P','stars':30},'opponent':{'tag':'#Q','stars':20}}
+    monkeypatch.setattr(coc_client.settings,'coc_clan_tag','#P')
+    monkeypatch.setattr(coc_client,'fetch_with_cache',fetch)
+    summary=asyncio.run(coc_client.get_cwl_summary(None,None))
+    assert sorted(r['roundNumber'] for r in summary['rounds'])==[1,3]
+    assert summary['missingWars']==1 and summary['scheduledRounds']==7
+
+
+def test_exp_and_role_are_bonuses_without_overriding_attack_strength():
+    players=[member('#A',18,heroesLevel=300,heroEquipmentScore=10,expLevel=300,role='leader',league='Electro League 32'),
+             member('#B',18,heroesLevel=600,heroEquipmentScore=30,expLevel=200,role='member',league='Electro League 32')]
+    result=score_and_categorize(players,MODE_WEIGHTS['cwl'],{},mode='cwl')
+    assert result['clanRanking'][0]['tag']=='#B'
+    assert result['allPlayers'][0]['strengthCoverage']==100
+    role_delta=(result['allPlayers'][0]['scoreComponents']['role']-result['allPlayers'][1]['scoreComponents']['role'])*MODE_WEIGHTS['cwl']['role']/100
+    assert 0 < role_delta <= 1

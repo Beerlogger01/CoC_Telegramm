@@ -21,7 +21,7 @@ MODE_WEIGHTS = {
     "war": {"strength": 20.0, "discipline": 35.0, "quality": 35.0, "role": 10.0},
     "cwl": {"strength": 55.0, "discipline": 20.0, "quality": 20.0, "role": 5.0},
 }
-ROLE_SCORE = {"leader": 100.0, "coLeader": 85.0, "admin": 65.0, "member": 50.0}
+ROLE_SCORE = {"leader": 65.0, "coLeader": 60.0, "admin": 55.0, "member": 50.0}
 PREFS = ("in", "out", "unknown")
 
 
@@ -165,7 +165,7 @@ def score_and_categorize(
     max_donations = max((int(m.get("donations") or 0) for m in ranking), default=0)
     max_raid = max((int(m.get("raidLoot") or 0) for m in ranking), default=0)
     groups = {x: [] for x in ("main","bench","inactive","optout","needs_review",
-                              "cwl_excluded","twinks","kick","promotion","bonus")}
+                              "cwl_review","twinks","kick","promotion","bonus")}
     full = []
     for original in ranking:
         p = dict(original)
@@ -208,12 +208,11 @@ def score_and_categorize(
         elif hours_idle is not None and hours_idle > 48:
             available = "inactive"
             warnings.append("Вручную отмечено более 48 часов без входа")
-        elif mode == "cwl" and p.get("missedThisCWL"):
-            available = "cwl_excluded"
-            warnings.append("Полностью пропущен раунд текущей ЛВК: исключить до следующего сезона")
         elif preference not in ("in", "out"):
             available = "needs_review"
             warnings.append("Неизвестно согласие из профиля CoC")
+        if mode == "cwl" and p.get("missedThisCWL"):
+            warnings.append("Пропущен раунд текущей ЛВК: уточнить причину и готовность; решение за руководством")
         if hours_idle is None:
             warnings.append("Последний вход недоступен через официальный API")
         if count < 3:
@@ -256,6 +255,8 @@ def score_and_categorize(
             groups["bonus"].append(p)
         if p.get("ownerAccountCount", 0) > 1:
             groups["twinks"].append(p)
+        if mode == "cwl" and p.get("missedThisCWL"):
+            groups["cwl_review"].append(p)
         full.append(p)
     eligible = sorted((p for p in full if p["eligibility"] == "candidate"),
                       key=lambda p: (-p["selectionScore"], -int(p.get("townHallLevel") or 0),
@@ -263,7 +264,7 @@ def score_and_categorize(
     groups["main"] = eligible[:max(0, int(size))]
     groups["bench"] = eligible[max(0, int(size)):]
     for p in full:
-        if p["eligibility"] in ("inactive", "optout", "needs_review", "cwl_excluded"):
+        if p["eligibility"] in ("inactive", "optout", "needs_review"):
             groups[p["eligibility"]].append(p)
     groups["kick"].sort(key=lambda p: (p["selectionScore"], p.get("name") or ""))
     groups["promotion"].sort(key=lambda p: -(p["contributionScore"].get("score") or 0))

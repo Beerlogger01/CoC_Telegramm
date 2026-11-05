@@ -124,10 +124,12 @@ async def get_league_wars(
     except (NotFoundError, ForbiddenError):
         return {"state": "notInWar"}, []
     tags: list[str] = []
-    for round_data in group.get("rounds", []):
+    round_numbers = {}
+    for number, round_data in enumerate(group.get("rounds", []), 1):
         for tag in round_data.get("warTags", []):
             if tag and tag != "#0" and tag not in tags:
                 tags.append(tag)
+                round_numbers[tag] = number
     # CWL normally has at most 28 wars in an eight-clan group.
     semaphore = asyncio.Semaphore(4)
 
@@ -139,7 +141,7 @@ async def get_league_wars(
                     f"{settings.coc_api_base}/clanwarleagues/wars/{encode_tag(tag)}",
                 )
                 teams = (data.get("clan") or {}, data.get("opponent") or {})
-                return {**data, "_warTag": tag} if include_all or any(team.get("tag") == clan_tag for team in teams) else None
+                return {**data, "_warTag": tag, "_round": round_numbers[tag]} if include_all or any(team.get("tag") == clan_tag for team in teams) else None
             except (NotFoundError, RateLimitError, ForbiddenError, RuntimeError, TimeoutError):
                 return None
 
@@ -150,6 +152,8 @@ async def get_league_wars(
 def summarize_cwl(group: dict[str, Any], wars: list[dict[str, Any]], clan_tag: str) -> dict[str, Any]:
     """Own results and group ranking: attack stars + 10 per completed win, then destruction."""
     observed = []
+    round_numbers = {tag: number for number, r in enumerate(group.get("rounds") or [], 1)
+                     for tag in r.get("warTags") or [] if tag and tag != "#0"}
     seen = set()
     for war in sorted(wars, key=lambda x: x.get("startTime") or ""):
         own, enemy = war.get("clan") or {}, war.get("opponent") or {}
@@ -167,6 +171,7 @@ def summarize_cwl(group: dict[str, Any], wars: list[dict[str, Any]], clan_tag: s
         if war.get("state") == "warEnded":
             result = "win" if s > e or (s == e and d > 0) else ("draw" if s == e and d == 0 else "loss")
         observed.append({
+            "roundNumber": war.get("_round") or round_numbers.get(war.get("_warTag")) or len(observed) + 1,
             "enemy": enemy.get("name") or "Соперник", "result": result,
             "stars": s, "enemyStars": e, "startTime": war.get("startTime"),
         })

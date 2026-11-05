@@ -45,3 +45,15 @@ def test_progress_selects_alt_and_period_without_invented_data():
     controls = str(progress_keyboard(fixture(),1,30).inline_keyboard)
     assert "acct:progress:1" in controls
     assert "growth:days:30" in controls
+
+
+def test_progress_and_accounts_are_fully_paginated():
+    from app.profile_ui import progress_changes
+    profiles=[{'tag':f'#{n}','name':f'Player {n}'} for n in range(25)]
+    assert 'acct:view:24' in str(profile_keyboard(profiles,99))
+    assert 'Player 24' in profile_text(profiles,None,99)
+    data={'historyAvailable':True,'changes':{'heroEquipment':{f'Item <{n}>':{'from':1,'to':2} for n in range(45)}}}
+    assert len(progress_changes(data))==45
+    assert 'Item &lt;44&gt;' in progress_text(data,'Lex',30,2)
+    assert 'Item &lt;0&gt;' not in progress_text(data,'Lex',30,2)
+    assert 'growth:page:2' in str(progress_keyboard(profiles,24,30,1,3))

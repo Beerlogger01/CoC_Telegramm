@@ -33,7 +33,7 @@ def test_manual_last_seen_is_distinct_from_api():
 
 def test_moderation_categories_hidden_without_captain():
     data=_roster()
-    ordinary=str(lineup_keyboard(data=data).inline_keyboard)
-    captain=str(lineup_keyboard(data=data,captain=True).inline_keyboard)
+    ordinary=str(lineup_keyboard("filters", data=data).inline_keyboard)
+    captain=str(lineup_keyboard("filters", data=data,captain=True).inline_keyboard)
     assert "lineup:kick:0" not in ordinary
     assert "lineup:kick:0" in captain

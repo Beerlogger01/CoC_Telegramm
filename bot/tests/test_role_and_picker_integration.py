@@ -125,6 +125,9 @@ def test_stale_picker_callback_cannot_select_newly_taken_tag(monkeypatch, tmp_pa
     update.callback_query = SimpleNamespace(
         data="pick:player:0", answer=fake_answer, edit_message_text=fake_edit,
     )
+    async def fake_send(update, message, **kwargs):
+        texts.append(message)
+    monkeypatch.setattr(bot_module, "send_or_edit_message", fake_send)
     monkeypatch.setattr(bot_module, "show_player_picker", fake_refresh)
     monkeypatch.setattr(bot_module, "process_binding", fail_bind)
     asyncio.run(bot_module.roster_callback(update, context))

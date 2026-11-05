@@ -1,5 +1,5 @@
 name: Clash of Clans Telegram Bot
-version: "0.2.3"
+version: "0.3.0"
 slug: coc_telegram
 description: Independent Clash of Clans Telegram bot with war analytics
 url: https://github.com/Beerlogger01/CoC_Telegramm

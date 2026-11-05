@@ -12,7 +12,8 @@ from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, TelegramError
+from telegram.error import BadRequest, TelegramError, Forbidden
+from app.navigation import callback_data, acknowledge, page_index, back_buttons, cancel_input_modes
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,21 @@ class PollStore:
                                                 (time.time() if now is None else now,))]
         return [self.get(poll_id) for poll_id in ids]
 
+    def listing(self, chat_id: int) -> list[dict]:
+        with self.connect() as conn:
+            ids = [row[0] for row in conn.execute(
+                "SELECT id FROM clan_polls WHERE chat_id=? AND message_id IS NOT NULL ORDER BY id DESC LIMIT 100", (chat_id,))]
+        return [self.get(i) for i in ids]
+
+    def claim_announcement(self, poll_id: int) -> bool:
+        # Commit BEFORE Telegram. A timeout may mean delivery succeeded.
+        with self.connect() as conn:
+            return bool(conn.execute("UPDATE clan_polls SET announced=2 WHERE id=? AND announced=0", (poll_id,)).rowcount)
+
+    def release_announcement(self, poll_id: int):
+        with self.connect() as conn:
+            conn.execute("UPDATE clan_polls SET announced=0 WHERE id=? AND announced=2", (poll_id,))
+
     def mark_announced(self, poll_id: int):
         with self.connect() as conn:
             conn.execute("UPDATE clan_polls SET announced=1 WHERE id=?", (poll_id,))
@@ -150,6 +166,7 @@ class PollController:
         if context.user_data.get("awaiting_tag") or context.user_data.get("awaiting_player_token"):
             await self.send(update, "Заверши или отмени привязку аккаунта, затем открой /poll.")
             return
+        cancel_input_modes(context)
         context.user_data["poll_draft"] = {"stage": "question", "options": []}
         await self.show(update, context)
 
@@ -171,6 +188,8 @@ class PollController:
         elif stage == "options":
             lines.append("\nНапиши следующий вариант (до 80 символов). Нужно 2–10 вариантов.")
             rows.append([InlineKeyboardButton("✅ Варианты готовы", callback_data="poll:done")])
+            if draft["options"]:
+                rows.append([InlineKeyboardButton("↶ Удалить последний вариант", callback_data="poll:remove")])
         elif stage == "duration":
             lines.append("\nВыбери длительность или напиши свою: 30м, 2ч, 3д.")
             for values in ((("1 мин", 60), ("1 ч", 3600), ("6 ч", 21600)),
@@ -213,15 +232,14 @@ class PollController:
         await self.show(update, context)
 
     async def callback(self, update, context):
-        query = update.callback_query
-        await query.answer()
+        await acknowledge(update)
         if not await self.has_access(update, context):
             await self.send(update, "Доступ только руководству CoC в личке.")
             return
-        action = query.data.split(":")[1]
+        action = callback_data(update).split(":")[1]
         if action == "cancel":
             context.user_data.pop("poll_draft", None)
-            await self.send(update, "Черновик удалён. /menu — главное меню.")
+            await self.listing(update, context)
             return
         draft = context.user_data.get("poll_draft")
         if not draft:
@@ -232,10 +250,12 @@ class PollController:
                 await self.show(update, context, "Добавь минимум два варианта.")
                 return
             draft["stage"] = "duration"
+        elif action == "remove" and draft["stage"] == "options":
+            if draft["options"]: draft["options"].pop()
         elif action == "add":
             draft["stage"] = "options"
         elif action == "duration" and len(draft["options"]) >= 2:
-            seconds = int(query.data.split(":")[2])
+            seconds = int(callback_data(update).split(":")[2])
             if not 60 <= seconds <= 30 * 86400:
                 return
             draft.update(duration=seconds, stage="preview")
@@ -248,10 +268,14 @@ class PollController:
             try:
                 message = await context.bot.send_message(chat_id=self.group_id, text=poll_text(poll),
                                                          parse_mode=ParseMode.HTML, reply_markup=vote_keyboard(poll))
-            except TelegramError:
-                logger.warning("Could not publish clan poll %s", poll_id)
+            except (BadRequest, Forbidden):
+                logger.warning("Telegram rejected clan poll %s", poll_id)
                 context.user_data["poll_draft"] = draft
-                await self.show(update, context, "Не удалось отправить в группу. Проверь доступ бота и повтори.")
+                await self.show(update, context, "Telegram отклонил публикацию. Проверь доступ бота к группе и повтори.")
+                return
+            except TelegramError:
+                logger.warning("Delivery of clan poll %s is uncertain; no automatic resend", poll_id)
+                await self.send(update, "Telegram не подтвердил доставку. Проверь группу перед созданием нового голосования: повторная отправка отключена, чтобы не создать дубль.", reply_markup=back_buttons("menu_polls"))
                 return
             self.store.attach(poll_id, message.message_id)
             await self.send(update, "✅ Голосование опубликовано в группе клана. Итоги появятся после окончания срока.")
@@ -263,24 +287,70 @@ class PollController:
         if not query.message or not update.effective_user:
             await query.answer("Открой исходное сообщение в группе.")
             return
-        _, poll_id, index = query.data.split(":")
+        _, poll_id, index = callback_data(update).split(":")
         answer = self.store.vote(int(poll_id), query.message.chat.id, query.message.message_id,
                                  update.effective_user.id, int(index))
         await query.answer(answer, show_alert=True)
 
+    async def listing(self, update, context, page=0):
+        polls = self.store.listing(self.group_id or 0)
+        page = page_index(page,len(polls),6)
+        rows = []
+        lines = ["🗳 <b>Голосования клана</b>",f"Страница {page+1}/{max(1,(len(polls)+5)//6)}"]
+        for poll in polls[page*6:(page+1)*6]:
+            status = "🟢" if poll["closes_at"] > time.time() else "🏁"
+            rows.append([InlineKeyboardButton(f"{status} {poll['question'][:45]}",callback_data=f"poll:view:{poll['id']}:{page}")])
+        if not polls: lines.append("Голосований пока нет. Руководство может создать первое.")
+        nav = []
+        if page: nav.append(InlineKeyboardButton("◀",callback_data=f"poll:list:{page-1}"))
+        if (page+1)*6 < len(polls): nav.append(InlineKeyboardButton("▶",callback_data=f"poll:list:{page+1}"))
+        if nav: rows.append(nav)
+        if await self.has_access(update,context):
+            rows.append([InlineKeyboardButton("➕ Создать голосование",callback_data="menu_poll")])
+        rows.extend(back_buttons("menu_community").inline_keyboard)
+        await self.send(update,"\n".join(lines),reply_markup=InlineKeyboardMarkup(rows))
+
+    async def browse(self, update, context):
+        await acknowledge(update)
+        _,action,value,*extra = callback_data(update).split(":")
+        if action == "list":
+            await self.listing(update,context,int(value)); return
+        poll = self.store.get(int(value))
+        if not poll or poll["chat_id"] != self.group_id or not poll["message_id"]:
+            await self.listing(update,context); return
+        ended = poll["closes_at"] <= time.time()
+        text = poll_text(poll,result=ended)
+        if not ended: text += "\n\nГолосуй в исходном сообщении группы клана."
+        rows = []
+        if str(self.group_id).startswith("-100"):
+            rows.append([InlineKeyboardButton("↗ Открыть в группе",url=f"https://t.me/c/{str(self.group_id)[4:]}/{poll['message_id']}")])
+        rows.extend(back_buttons(f"poll:list:{int(extra[0]) if extra else 0}").inline_keyboard)
+        await self.send(update,text,reply_markup=InlineKeyboardMarkup(rows))
+
     async def finish_due(self, context):
         for poll in self.store.due():
             try:
-                # Editing is idempotent; tolerate deleted or already edited messages.
-                try:
-                    await context.bot.edit_message_text(chat_id=poll["chat_id"], message_id=poll["message_id"],
-                                                        text=poll_text(poll, result=True), parse_mode=ParseMode.HTML,
-                                                        reply_markup=None)
-                except BadRequest:
-                    pass
-                await context.bot.send_message(chat_id=poll["chat_id"], text=poll_text(poll, result=True),
-                                               parse_mode=ParseMode.HTML)
+                await context.bot.edit_message_text(chat_id=poll["chat_id"], message_id=poll["message_id"],
+                                                    text=poll_text(poll, result=True), parse_mode=ParseMode.HTML,
+                                                    reply_markup=None)
+            except BadRequest as exc:
+                reason = str(exc).lower()
+                if not any(x in reason for x in ("message is not modified", "message to edit not found", "message can't be edited")):
+                    logger.warning("Could not render poll result %s", poll["id"])
+                    continue
             except TelegramError:
-                logger.warning("Could not announce poll %s; retrying next cycle", poll["id"])
+                # Retrying an edit cannot duplicate a message.
+                logger.warning("Could not update poll %s; retrying next cycle", poll["id"])
+                continue
+            if not self.store.claim_announcement(poll["id"]):
+                continue
+            try:
+                await context.bot.send_message(chat_id=poll["chat_id"], text=poll_text(poll, result=True), parse_mode=ParseMode.HTML)
+            except (BadRequest, Forbidden):
+                self.store.release_announcement(poll["id"])
+                logger.warning("Telegram rejected poll result %s", poll["id"])
+                continue
+            except TelegramError:
+                logger.warning("Poll result %s delivery uncertain; result stays in original message; no resend", poll["id"])
                 continue
             self.store.mark_announced(poll["id"])

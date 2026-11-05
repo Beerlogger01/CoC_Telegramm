@@ -16,12 +16,16 @@ def test_independent_mode_weights_are_persistent(tmp_path):
     assert SelectionStore(path).weights("war") == MODE_WEIGHTS["war"]
 
 
-def test_cwl_one_missed_round_excludes_but_not_regular_war():
+def test_cwl_missed_round_warns_without_automatic_season_ban():
     member={"tag":"#A","name":"A","townHallLevel":18,"warPreference":"in",
             "role":"coLeader","missedThisCWL":True}
     cwl=score_and_categorize([member],MODE_WEIGHTS["cwl"],{},mode="cwl",now=NOW)
     war=score_and_categorize([member],MODE_WEIGHTS["war"],{},mode="war",now=NOW)
-    assert len(cwl["categories"]["cwl_excluded"])==1
+    assert len(cwl["categories"]["cwl_review"])==1
+    assert len(cwl["categories"]["main"])==1
+    assert cwl["allPlayers"][0]["eligibility"] == "candidate"
+    assert any("решение за руководством" in reason for reason in cwl["allPlayers"][0]["reasons"])
+    assert not war["categories"]["cwl_review"]
     assert len(war["categories"]["main"])==1
 
 

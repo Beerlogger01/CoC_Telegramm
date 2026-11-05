@@ -18,22 +18,27 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    TypeHandler,
     filters,
 )
-from telegram.helpers import escape_markdown
-from telegram.error import BadRequest
+from telegram.error import TelegramError
 
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
 from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
-from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard, format_cwl_message
+from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard, war_keyboard
 from app.tags import assign_game_tag, sync_tags_daily
 from app.binding_ui import sorted_roster, roster_keyboard, available_roster
 from app.captain import is_captain, captain_report_text
-from app.players_ui import roster_page, roster_keyboard as players_roster_keyboard, donation_text, hall_text, back_to_roster
+from app.players_ui import roster_page, roster_keyboard as players_roster_keyboard, donation_text, donation_keyboard, hall_text
 from app.profile_ui import (profile_text, profile_keyboard, detail_text, detail_keyboard,
-                            delete_keyboard, progress_text, progress_keyboard)
+                            delete_keyboard, progress_text, progress_keyboard, progress_changes)
 from app.polls import PollController, PollStore
+from app.operations import Operations, WarPlanStore
+from app.reminders import ReminderStore
+from app.views import home_keyboard, hub_screen, cwl_screen, warlog_screen, war_review, welcome_text
+from app.navigation import (navigator, callback_data, acknowledge, back_buttons,
+                            ignore_duplicate_update, page_index, cancel_input_modes)
 from app.war_results import WarAnnouncementStore, classify_result, format_result, recently_finished, war_identity
 
 log_level = logging.DEBUG if settings.debug else logging.INFO
@@ -60,39 +65,19 @@ TAG_PATTERN = re.compile(r"^[0289PYLQGRJCUV]+$")
 TAG_EXTRACT_PATTERN = re.compile(r"#?[0289PYLQGRJCUV]{4,}")
 
 
-def safe_markdown(value: object, default: str = "N/A") -> str:
-    return escape_markdown(str(value if value is not None else default), version=1)
-
-
 def format_clan(payload: dict[str, Any]) -> str:
-    """Format clan information with capital details."""
-    msg = (
-        f"*{safe_markdown(payload.get('name', 'Clan'))}*\n"
-        f"🏷️ Tag: `{safe_markdown(payload.get('tag'))}`\n"
-        f"📊 Level: {safe_markdown(payload.get('clanLevel'))}\n"
-        f"👥 Members: {safe_markdown(payload.get('members'))}\n"
-        f"⚔️ War League: {safe_markdown(payload.get('warLeague', {}).get('name'))}\n"
-    )
-    
-    # Add capital info if available
-    capital = payload.get('clanCapital', {})
-    if capital:
-        capital_name = safe_markdown(capital.get('name'), "Capital")
-        capital_level = safe_markdown(capital.get('capitalHallLevel'))
-        msg += f"\n🏛️ *Capital:* {capital_name} (Hall Level: {capital_level})\n"
-    
-    return msg
+    esc = lambda v: html.escape(str(v if v is not None else 'нет данных'))
+    return (f"🏰 <b>{esc(payload.get('name'))}</b>\n"
+            f"Тег: <code>{esc(payload.get('tag'))}</code>\n"
+            f"Уровень клана: {esc(payload.get('clanLevel'))}\n"
+            f"Игроков: {esc(payload.get('members'))} / 50\n"
+            f"Лига ЛВК: {esc((payload.get('warLeague') or {}).get('name'))}")
 
 
 def format_player(payload: dict[str, Any]) -> str:
-    return (
-        f"*{safe_markdown(payload.get('name', 'Player'))}*\n"
-        f"Tag: `{safe_markdown(payload.get('tag'))}`\n"
-        f"Town Hall: {safe_markdown(payload.get('townHallLevel'))}\n"
-        f"Trophies: {safe_markdown(payload.get('trophies'))}\n"
-        f"Best Trophies: {safe_markdown(payload.get('bestTrophies'))}\n"
-        f"Clan: {safe_markdown(payload.get('clan', {}).get('name'), 'No clan')}\n"
-    )
+    league = payload.get('leagueTier') or payload.get('league') or {}
+    return detail_text({**payload, 'leagueName': league.get('name')})
+
 
 
 def format_war(payload: dict[str, Any]) -> str:
@@ -101,58 +86,7 @@ def format_war(payload: dict[str, Any]) -> str:
 
 
 def format_activity_report(payload: dict[str, Any]) -> str:
-    """Format clan activity report."""
-    clan_name = payload.get("clanName", "Clan")
-    clan_level = payload.get("clanLevel", "N/A")
-    
-    members = payload.get("members", {})
-    total = members.get("total", 0)
-    avg_trophies = members.get("avgTrophies", 0)
-    
-    war = payload.get("war", {})
-    war_state = war.get("state", "notInWar")
-    war_stars = war.get("stars", 0)
-    attacks_done = war.get("attacksDone", 0)
-    attacks_remaining = war.get("attacksRemaining", 0)
-    
-    activity = payload.get("activity", {})
-    most_active = activity.get("mostActive", [])
-    least_active = activity.get("leastActive", [])
-    
-    msg = f"📊 *Отчет об активности клана {safe_markdown(clan_name)}*\n\n"
-    msg += f"🏆 *Уровень клана:* {clan_level}\n"
-    msg += f"👥 *Участников:* {total}\n"
-    msg += f"⚔️ *Среднее трофеев:* {avg_trophies}\n\n"
-    
-    msg += f"🎖️ *Статус войны:* {war_state}\n"
-    if war_state == "inWar":
-        msg += f"⭐ *Звезд набрано:* {war_stars}\n"
-        msg += f"🔨 *Атак сделано:* {attacks_done}/{attacks_done + attacks_remaining}\n"
-    msg += "\n"
-    
-    def translate_role(role: str) -> str:
-        """Translate role to Russian."""
-        role_map = {
-            "leader": "Лидер",
-            "coLeader": "Co-Лидер",
-            "admin": "Администратор",
-            "member": "Участник",
-        }
-        return role_map.get(role, role)
-    
-    msg += "🟢 *Больше всего пожертвований (не время онлайн):*\n"
-    for player in most_active[:5]:
-        name = player.get("name", "Unknown")
-        role = translate_role(player.get("role", "member"))
-        msg += f"  • {safe_markdown(name)} ({safe_markdown(role)})\n"
-    
-    msg += "\n📉 *Меньше всего пожертвований:*\n"
-    for player in least_active[:5]:
-        name = player.get("name", "Unknown")
-        role = translate_role(player.get("role", "member"))
-        msg += f"  • {safe_markdown(name)} ({safe_markdown(role)})\n"
-    
-    return msg
+    return captain_report_text(payload)
 
 
 class InvalidTagError(ValueError):
@@ -201,18 +135,18 @@ def attacks_used(member: dict[str, Any]) -> int:
 
 def binding_error_message(status: int) -> str:
     if status == 400:
-        return "Invalid player tag format."
+        return "Неверный формат тега игрока."
     if status == 401:
-        return "Backend token invalid. Please update the backend token."
+        return "Сервис игры временно недоступен. Сообщи руководству."
     if status == 403:
-        return "Backend IP is not whitelisted for Clash of Clans."
+        return "Сервис игры временно недоступен. Сообщи руководству."
     if status == 404:
-        return "Player tag not found."
+        return "Игрок с таким тегом не найден."
     if status == 429:
-        return "Rate limit reached. Please try again later."
+        return "Слишком много запросов к игре. Попробуй немного позже."
     if status == 504:
-        return "Backend timed out contacting Clash of Clans."
-    return "Backend error while validating player."
+        return "Игра отвечает дольше обычного. Попробуй позже."
+    return "Не удалось проверить игрока. Попробуй позже."
 
 
 def ensure_group_chat(update: Update) -> bool:
@@ -237,6 +171,7 @@ def format_settings_report() -> str:
 async def log_any_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
+    cancel_input_modes(context)
     logger.info(
         "Command received user_id=%s chat_id=%s text=%s",
         update.effective_user.id if update.effective_user else None,
@@ -257,28 +192,8 @@ def bind_cancel_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def main_menu_keyboard(user_id: int | None = None, captain: bool = False) -> InlineKeyboardMarkup:
-    """One entry point to the full bot; short labels fit on phones."""
-    rows = [
-        [InlineKeyboardButton("⚔️ Война", callback_data="menu_war"),
-         InlineKeyboardButton("📋 Следующий состав", callback_data="menu_nextwar")],
-        [InlineKeyboardButton("👥 Игроки", callback_data="menu_topplayers"),
-         InlineKeyboardButton("🏆 Лига CWL", callback_data="menu_cwl")],
-        [InlineKeyboardButton("🏛️ Столица", callback_data="menu_raids"),
-         InlineKeyboardButton("🏰 Клан", callback_data="menu_clan")],
-        [InlineKeyboardButton("🎁 Донат", callback_data="menu_donate"),
-         InlineKeyboardButton("🏆 Зал славы", callback_data="menu_hall")],
-        [InlineKeyboardButton("👤 Профиль", callback_data="menu_profile"),
-         InlineKeyboardButton("👥 Аккаунты", callback_data="menu_accounts")],
-        [InlineKeyboardButton("📈 Развитие", callback_data="menu_progress"),
-         InlineKeyboardButton("📊 Веса", callback_data="menu_weights")],
-        [InlineKeyboardButton("📊 Рейтинг клана", callback_data="menu_rating"),
-         InlineKeyboardButton("🗳 Голосование", callback_data="menu_poll")],
-        [InlineKeyboardButton("❓ Справка", callback_data="menu_help")],
-    ]
-    if captain:
-        rows.append([InlineKeyboardButton("🛡️ Управление кланом", callback_data="menu_staff")])
-    return InlineKeyboardMarkup(rows)
+def main_menu_keyboard(user_id=None, captain=False):
+    return home_keyboard(captain)
 
 
 def back_keyboard() -> InlineKeyboardMarkup:
@@ -295,6 +210,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/hall — зал славы клана\n"
         "/cwl — 7 войн ЛВК и место по звёздам\n"
         "/rating [war|cwl] — рейтинг всего клана\n"
+        "/ready — готовность каждого аккаунта к конкретной войне\n"
+        "/lineup — сохранённые капитаном составы\n"
+        "/history — история и разбор атак\n"
         "/poll — создать голосование (для руководства, в личке)\n"
         "/nextwar war 30 — состав КВ 30 × 30\n"
         "/progress — развитие любого своего аккаунта\n"
@@ -326,6 +244,9 @@ async def sync_bot_commands(bot) -> None:
             BotCommand("nextwar", "📋 Следующий состав"),
             BotCommand("cwl", "🏆 Лига CWL"),
             BotCommand("rating", "📊 Рейтинг клана"),
+            BotCommand("ready", "✅ Моя готовность"),
+            BotCommand("lineup", "📋 Сохранённые составы"),
+            BotCommand("history", "📜 Разбор войн"),
             BotCommand("poll", "🗳 Создать голосование"),
             BotCommand("progress", "📈 Прогресс игрока"),
             BotCommand("staff", "🛡️ Управление кланом"),
@@ -354,30 +275,8 @@ async def sync_bot_commands(bot) -> None:
     )
 
 
-async def send_or_edit_message(
-    update: Update, text: str, parse_mode: str | None = ParseMode.MARKDOWN,
-    reply_markup=None,
-):
-    """Send or update a message. Bad user-generated markup must not break navigation."""
-    if update.callback_query and reply_markup is None:
-        reply_markup = back_keyboard()
-    if update.message:
-        sender = update.message.reply_text
-    elif update.callback_query:
-        sender = update.callback_query.edit_message_text
-    else:
-        return None
-    try:
-        return await sender(text, parse_mode=parse_mode, reply_markup=reply_markup)
-    except BadRequest as exc:
-        if "message is not modified" in str(exc).lower():
-            return update.callback_query.message if update.callback_query else None
-        # Telegram may reject a name containing unescaped Markdown or HTML.
-        # Never mask unrelated Telegram errors such as permissions or invalid chat IDs.
-        if parse_mode is None or "can't parse entities" not in str(exc).lower():
-            raise
-        logger.warning("Telegram rejected text formatting; retrying without entities")
-        return await sender(text, parse_mode=None, reply_markup=reply_markup)
+async def send_or_edit_message(update: Update, text: str, parse_mode=ParseMode.HTML, reply_markup=None):
+    return await navigator.render(update, text, parse_mode, reply_markup)
 
 
 
@@ -393,9 +292,10 @@ async def handle_handler_exception(
 ) -> None:
     logger.exception("Unhandled handler error", exc_info=context.error)
     if update and update.effective_message:
-        await update.effective_message.reply_text(
-            "Unexpected error occurred. Please try again."
-        )
+        try:
+            await send_or_edit_message(update, "Не удалось открыть этот экран. Попробуй ещё раз через штаб.")
+        except TelegramError:
+            logger.warning("Could not deliver error screen")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -411,8 +311,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 return
             # Private chat - show bind option
             user_name = update.effective_user.first_name or "Player"
-            await update.message.reply_text(
-                f"👋 Привет, {user_name}!\n\n"
+            await send_or_edit_message(update,
+                f"👋 Привет, {html.escape(user_name)}!\n\n"
                 f"Я — бот Clash of Clans для нашего клана.\n\n"
                 f"🔐 Чтобы присоединиться к группе клана, нужно:\n"
                 f"1️⃣ Привязать свой аккаунт\n"
@@ -423,7 +323,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             return
         # Group chat
-        await update.message.reply_text(
+        await send_or_edit_message(update,
             f"🎮 Привет! Напиши мне в личку (@{context.bot.username}), чтобы привязать игровой аккаунт."
         )
     except Exception as e:  # noqa: BLE001
@@ -461,7 +361,8 @@ async def staff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
          InlineKeyboardButton("📊 Отчёт", callback_data="menu_captain")],
         [InlineKeyboardButton("⚖️ Веса", callback_data="menu_weights"),
          InlineKeyboardButton("👥 Привязки", callback_data="menu_accounts")],
-        [InlineKeyboardButton("🗳 Создать голосование", callback_data="menu_poll")],
+        [InlineKeyboardButton("📋 Сохранённые составы", callback_data="menu_ops"),
+         InlineKeyboardButton("🗳 Голосования", callback_data="menu_polls")],
         [InlineKeyboardButton("🏠 Штаб", callback_data="menu_home")],
     ]
     await send_or_edit_message(
@@ -479,11 +380,11 @@ async def staff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def staff_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.callback_query:
         return
-    await update.callback_query.answer()
+    await acknowledge(update)
     if not await has_captain_access(update, context):
         await send_or_edit_message(update, "Недостаточно прав CoC.")
         return
-    stage = (update.callback_query.data or "staff:kick").split(":")[1]
+    stage = (callback_data(update) or "staff:kick").split(":")[1]
     mode = "cwl" if stage == "bonus" else context.user_data.get("lineup_mode", "war")
     data = context.user_data.get("lineup_snapshot")
     if not data or data.get("mode") != mode:
@@ -505,7 +406,7 @@ async def captain_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             data = await fetch_json(client, "/activity-report")
-        await send_or_edit_message(update, captain_report_text(data), parse_mode=ParseMode.HTML)
+        await send_or_edit_message(update, captain_report_text(data), parse_mode=ParseMode.HTML, reply_markup=back_buttons("menu_staff"))
     except (httpx.RequestError, httpx.HTTPStatusError):
         await send_or_edit_message(update, "Не удалось собрать отчёт.")
 
@@ -514,11 +415,13 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show a single navigable dashboard in private chats and groups."""
     if not update.effective_user:
         return
+    cancel_input_modes(context)
     storage: BindingsStorage = context.application.bot_data["storage"]
     binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
     who = html.escape(binding.coc_player_tag) if binding else "не привязан"
     name = html.escape(settings.coc_clan_tag or "Troublemakers")
-    text = f"🏰 <b>Штаб клана</b>\n{name}\n\n👤 Мой аккаунт: <code>{who}</code>\nВыбери раздел:"
+    greeting = html.escape(update.effective_user.first_name or "Игрок")
+    text = f"🏰 <b>Штаб клана</b>\n{name}\n\nПривет, {greeting}!\n👤 Основной аккаунт: <code>{who}</code>\nВыбери раздел:"
     captain = await has_captain_access(update, context) if binding else False
     await send_or_edit_message(update, text, parse_mode=ParseMode.HTML,
                                reply_markup=main_menu_keyboard(captain=captain))
@@ -528,38 +431,33 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
     """Handle first message in private chat - offer binding."""
     if not update.message or not update.effective_user or not update.message.text:
         return
-    
+
     # Only for private chats
     if not ensure_private_chat(update):
         return
-    
+
     # Skip if user is waiting for tag input (capture_tag will handle it)
     if context.user_data.get("awaiting_tag") or context.user_data.get("awaiting_player_token"):
         return
-    
+
     # Skip if user is already bound
     storage: BindingsStorage = context.application.bot_data["storage"]
     binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
     if binding:
-        # User is bound, offer menu instead
-        context.user_data.pop("awaiting_tag", None)  # Clear any waiting state
-        await update.message.reply_text(
-            f"✅ Вы привязаны как {binding.coc_player_tag}.\nВыбери раздел:",
-            reply_markup=main_menu_keyboard(),
-        )
+        await menu(update, context)
         return
-    
+
     # User not bound - offer binding
     if not context.user_data.get("binding_offered"):
         context.user_data["binding_offered"] = True
         user_name = update.effective_user.first_name or "Player"
-        await update.message.reply_text(
-            f"👋 Привет, {user_name}!\n\n"
+        await send_or_edit_message(update,
+            f"👋 Привет, {html.escape(user_name)}!\n\n"
             f"Я — бот Clash of Clans для нашего клана.\n\n"
             f"🔐 Чтобы присоединиться к группе клана, нужно сначала привязать свой аккаунт.\n\n"
             f"Нажми 'Привязать' 👇",
             reply_markup=bind_keyboard(),
-            parse_mode=ParseMode.MARKDOWN,
+            parse_mode=ParseMode.HTML,
         )
 
 
@@ -571,7 +469,7 @@ async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             payload = await fetch_json(client, "/clan")
         await send_or_edit_message(
-            update, format_clan(payload), parse_mode=ParseMode.MARKDOWN,
+            update, format_clan(payload), parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🏆 Зал славы", callback_data="menu_hall"),
                  InlineKeyboardButton("🎁 Донат", callback_data="menu_donate")],
@@ -609,7 +507,10 @@ async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             payload = await fetch_json(client, f"/player/{encode_tag(tag)}")
-        await send_or_edit_message(update, format_player(payload), parse_mode=ParseMode.MARKDOWN)
+        league = payload.get("leagueTier") or payload.get("league") or {}
+        payload["leagueName"] = league.get("name") if isinstance(league, dict) else None
+        context.user_data["inspected_player"] = payload
+        await send_or_edit_message(update, detail_text(payload), reply_markup=detail_keyboard(0,False,payload,own=False,inspect=True))
     except httpx.HTTPStatusError as exc:
         logger.warning("Player API request failed status=%s", exc.response.status_code)
         await send_or_edit_message(update, binding_error_message(exc.response.status_code))
@@ -618,42 +519,64 @@ async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await send_or_edit_message(update, "Сервис данных игрока временно недоступен.")
 
 
+async def inspect_callback(update, context):
+    await acknowledge(update)
+    payload = context.user_data.get("inspected_player")
+    if not payload:
+        await send_or_edit_message(update,"Карточка устарела. Открой игрока снова."); return
+    _,section,_,*rest = callback_data(update).split(":")
+    section = "info" if section == "view" else section
+    page = int(rest[0]) if rest else 0
+    await send_or_edit_message(update,detail_text(payload,section=section,page=page),
+                               reply_markup=detail_keyboard(0,False,payload,section,page,own=False,inspect=True))
+
+
+async def warpage_callback(update,context):
+    await acknowledge(update)
+    payload = context.user_data.get("current_war_snapshot")
+    if payload is None:
+        await war(update,context); return
+    page = int(callback_data(update).split(":")[1])
+    await send_or_edit_message(update,format_war_message(payload,page),reply_markup=war_keyboard(payload,page))
+
+
 async def war(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message and not update.callback_query:
         return
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
             payload = await fetch_json(client, "/war")
-            await send_or_edit_message(update, format_war(payload), parse_mode=ParseMode.HTML)
+            context.user_data["current_war_snapshot"] = payload
+            await send_or_edit_message(update, format_war(payload), parse_mode=ParseMode.HTML, reply_markup=war_keyboard(payload))
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             logger.warning("Backend error: %s", exc)
             if status == 429:
-                message = "Rate limit reached. Please try again later."
+                message = "Слишком много запросов к игре. Попробуй немного позже."
             elif status == 400:
-                message = "Invalid clan tag configured."
+                message = "Не удалось найти настроенный клан. Сообщи руководству."
             elif status == 401:
-                message = "Backend token invalid. Please update the backend token."
+                message = "Сервис игры временно недоступен. Сообщи руководству."
             elif status == 403:
-                message = "Backend IP is not whitelisted for Clash of Clans."
+                message = "Сервис игры временно недоступен. Сообщи руководству."
             elif status == 504:
-                message = "Backend timed out contacting Clash of Clans."
+                message = "Игра отвечает дольше обычного. Попробуй позже."
             else:
-                message = "Backend error while fetching war data."
-            await send_or_edit_message(update, message)
+                message = "Не удалось загрузить сведения о войне."
+            await send_or_edit_message(update, message, reply_markup=back_buttons("menu_wars"))
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
-            await send_or_edit_message(update, "Backend is unreachable. Please try again later.")
+            await send_or_edit_message(update, "Сервис данных временно недоступен. Попробуй позже.")
         except Exception:  # noqa: BLE001
             logger.exception("Unhandled error in /war")
-            await send_or_edit_message(update, "Unexpected error occurred. Please try again.")
+            await send_or_edit_message(update, "Не удалось выполнить действие. Попробуй ещё раз через штаб.")
 
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
     try:
-        await update.message.reply_text("pong")
+        await send_or_edit_message(update, "pong")
     except Exception:  # noqa: BLE001
         logger.exception("Failed to reply to /ping")
 
@@ -662,7 +585,7 @@ async def bind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
     if not ensure_private_chat(update):
-        await update.message.reply_text("Привязка доступна только в личном чате.")
+        await send_or_edit_message(update, "Привязка доступна только в личном чате.")
         return
     if context.args:
         await process_binding(update, context, " ".join(context.args))
@@ -722,8 +645,8 @@ async def show_player_picker(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def roster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.callback_query or not ensure_private_chat(update):
         return
-    await update.callback_query.answer()
-    command = update.callback_query.data or ""
+    await acknowledge(update)
+    command = callback_data(update) or ""
     parts = command.split(":")
     if len(parts) != 3:
         return
@@ -731,16 +654,16 @@ async def roster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     idx = int(index_str)
     if kind == "manual":
         context.user_data["awaiting_tag"] = True
-        await update.callback_query.edit_message_text(
+        await send_or_edit_message(update,
             "✍️ Введи игровой тег, например #VU099JCR.",
             reply_markup=bind_cancel_keyboard())
         return
     members = context.user_data.get("picker_members") or []
     if not members:
-        await update.callback_query.edit_message_text("Список устарел. Введи /bind.")
+        await send_or_edit_message(update, "Список устарел. Введи /bind.")
         return
     if kind == "page":
-        await update.callback_query.edit_message_reply_markup(reply_markup=roster_keyboard(members, idx))
+        await send_or_edit_message(update, "🔐 <b>Выбери свой аккаунт</b>", reply_markup=roster_keyboard(members, idx))
         return
     if kind != "player" or not 0 <= idx < len(members):
         return
@@ -750,12 +673,12 @@ async def roster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     storage: BindingsStorage = context.application.bot_data["storage"]
     group_id = settings.clan_group_id or 0
     if storage.get_user_id_by_tag(group_id, str(member["tag"])) is not None:
-        await update.callback_query.edit_message_text(
+        await send_or_edit_message(update,
             "🔒 Этот игровой аккаунт уже привязан. Обновляю список свободных игроков...")
         await show_player_picker(update, context)
         return
-    await update.callback_query.edit_message_text(
-        f"Выбран {member.get('name', '?')} · {member['tag']}. Проверяю аккаунт...")
+    await send_or_edit_message(update,
+        f"Выбран {html.escape(str(member.get('name') or '?'))} · {html.escape(member['tag'])}. Проверяю аккаунт...")
     await process_binding(update, context, str(member["tag"]))
 
 
@@ -777,7 +700,7 @@ async def process_binding(
     try:
         tag = normalize_tag(raw_tag)
     except InvalidTagError:
-        await update.effective_message.reply_text("Invalid player tag format.")
+        await send_or_edit_message(update, "Неверный формат тега игрока.")
         return
     logger.info(
         "Bind normalized user_id=%s tag=%s",
@@ -799,33 +722,33 @@ async def process_binding(
             status = exc.response.status_code
             logger.warning("Backend error validating player: %s", exc)
             if status == 404:
-                await update.effective_message.reply_text("Player tag not found.")
+                await send_or_edit_message(update, "Игрок с таким тегом не найден.")
             elif status in {401, 403}:
-                await update.effective_message.reply_text(
-                    "Backend authentication issue. Check API token/IP."
+                await send_or_edit_message(update,
+                    "Игра временно не принимает запросы. Сообщи руководству."
                 )
             else:
-                await update.effective_message.reply_text(binding_error_message(status))
+                await send_or_edit_message(update, binding_error_message(status), reply_markup=bind_cancel_keyboard())
             return
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable during bind: %s", exc)
-            await update.effective_message.reply_text("Backend is unreachable. Please try again later.")
+            await send_or_edit_message(update, "Сервис данных временно недоступен. Попробуй позже.")
             return
         except Exception:  # noqa: BLE001
             logger.exception("Unhandled error during bind validation")
-            await update.effective_message.reply_text("Unexpected error occurred. Please try again.")
+            await send_or_edit_message(update, "Не удалось выполнить действие. Попробуй ещё раз через штаб.")
             return
     if settings.enforce_clan_membership:
         if not settings.coc_clan_tag:
             logger.error("Clan membership enforcement enabled without COC_CLAN_TAG set")
-            await update.effective_message.reply_text(
-                "Binding unavailable: clan configuration missing."
+            await send_or_edit_message(update,
+                "Привязка пока недоступна: клан не настроен."
             )
             return
         player_clan = payload.get("clan", {}).get("tag")
         try:
             if not player_clan or normalize_tag(player_clan) != normalize_tag(settings.coc_clan_tag):
-                await update.effective_message.reply_text("Player is not in this clan.")
+                await send_or_edit_message(update, "Этот аккаунт сейчас не состоит в нашем клане.")
                 logger.info(
                     "Bind rejected user_id=%s tag=%s clan_tag=%s",
                     update.effective_user.id,
@@ -834,12 +757,12 @@ async def process_binding(
                 )
                 return
         except InvalidTagError:
-            await update.effective_message.reply_text("Player is not in this clan.")
+            await send_or_edit_message(update, "Этот аккаунт сейчас не состоит в нашем клане.")
             return
     if settings.require_player_verification and not verified:
         context.user_data["pending_coc_tag"] = tag
         context.user_data["awaiting_player_token"] = True
-        await update.effective_message.reply_text(
+        await send_or_edit_message(update,
             "🔐 Для проверки владения аккаунтом открой Clash of Clans → "
             "Настройки → Ещё настройки → API Token и пришли токен игрока сюда.\n"
             "Это НЕ ключ разработчика. Сообщение с токеном бот попытается удалить.",
@@ -850,7 +773,7 @@ async def process_binding(
     storage: BindingsStorage = context.application.bot_data["storage"]
     owner_id = storage.get_user_id_by_tag(settings.clan_group_id or 0, tag)
     if owner_id is not None and owner_id != update.effective_user.id:
-        await update.effective_message.reply_text(
+        await send_or_edit_message(update,
             "Игровой аккаунт уже привязан к другому пользователю. Обратитесь к администратору."
         )
         return
@@ -867,7 +790,7 @@ async def process_binding(
         storage.upsert_binding(binding)
     except Exception as exc:  # noqa: BLE001
         logger.error("Bind DB write failed user_id=%s error=%s", update.effective_user.id, exc)
-        await update.effective_message.reply_text("Internal error while saving binding.")
+        await send_or_edit_message(update, "Не удалось сохранить привязку. Попробуй позже.")
         return
     logger.info(
         "Bind saved user_id=%s group_id=%s tag=%s",
@@ -878,13 +801,12 @@ async def process_binding(
     mention = format_mention(update.effective_user.id, update.effective_user.full_name)
     try:
         if settings.clan_group_id is None:
-            await update.effective_message.reply_text(
-                f"Bound {mention} to {html.escape(tag)} successfully.\n"
-                "Clan group is not configured yet. "
-                "Ask an admin to set CLAN_GROUP_ID (use /chatid in the group).",
+            await send_or_edit_message(update,
+                f"✅ {mention}, аккаунт {html.escape(tag)} привязан.\n"
+                "Группа клана ещё не настроена. "
+                "Сообщи руководству.",
                 parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
+                )
             return
         expire_at = datetime.now(timezone.utc) + timedelta(minutes=settings.invite_ttl_minutes)
         invite = await context.bot.create_chat_invite_link(
@@ -898,19 +820,17 @@ async def process_binding(
             settings.clan_group_id,
             expire_at.isoformat(),
         )
-        await update.effective_message.reply_text(
-            f"Bound {mention} to {html.escape(tag)} successfully.\n"
-            f"Here is your invite link (valid for {settings.invite_ttl_minutes} minutes):\n"
+        await send_or_edit_message(update,
+            f"✅ {mention}, аккаунт {html.escape(tag)} привязан.\n"
+            f"Приглашение в группу (действует {settings.invite_ttl_minutes} мин):\n"
             f"{invite.invite_link}",
             parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("Invite creation failed user_id=%s error=%s", update.effective_user.id, exc)
-        await update.effective_message.reply_text(
-            f"Bound {mention} to {html.escape(tag)} successfully.",
+        await send_or_edit_message(update,
+            f"✅ {mention}, аккаунт {html.escape(tag)} привязан. Приглашение можно запросить через /grouplink.",
             parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
         )
 
 
@@ -918,7 +838,7 @@ async def unbind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user or not ensure_private_chat(update):
         return
     if not context.args or context.args[0].lower() != "confirm":
-        await update.message.reply_text(
+        await send_or_edit_message(update,
             "⚠️ Эта команда удалит ВСЕ твои игровые привязки, включая твинков.\n"
             "Для удаления одного аккаунта используй /unlink #ТЕГ.\n"
             "Для подтверждения всех: /unbind confirm"
@@ -926,7 +846,7 @@ async def unbind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     storage: BindingsStorage = context.application.bot_data["storage"]
     removed = storage.delete_binding(settings.clan_group_id or 0, update.effective_user.id)
-    await update.message.reply_text("Все привязанные аккаунты удалены." if removed
+    await send_or_edit_message(update, "Все привязанные аккаунты удалены." if removed
                                     else "У тебя нет привязанных аккаунтов.")
 
 
@@ -935,21 +855,20 @@ async def mytag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     try:
         if not ensure_private_chat(update):
-            await update.message.reply_text("Please use /mytag in a private chat with the bot.")
+            await send_or_edit_message(update, "Открой /mytag в личке бота.")
             return
         storage: BindingsStorage = context.application.bot_data["storage"]
         binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
         if not binding:
-            await update.message.reply_text("No tag bound for your account.")
+            await send_or_edit_message(update, "У тебя пока нет привязанного аккаунта. Открой /bind.")
             return
-        await update.message.reply_text(
-            f"Your bound tag is {html.escape(binding.coc_player_tag)}",
+        await send_or_edit_message(update,
+            f"Твой основной аккаунт: {html.escape(binding.coc_player_tag)}",
             parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
         )
     except Exception:  # noqa: BLE001
         logger.exception("Failed to handle /mytag")
-        await update.message.reply_text("Unexpected error occurred. Please try again.")
+        await send_or_edit_message(update, "Не удалось выполнить действие. Попробуй ещё раз через штаб.")
 
 
 async def _load_owned_profiles(update: Update, context: ContextTypes.DEFAULT_TYPE) -> list[dict]:
@@ -966,7 +885,7 @@ async def _load_owned_profiles(update: Update, context: ContextTypes.DEFAULT_TYP
                 async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
                     result = await fetch_json(client, f"/player/{encode_tag(tag)}")
             except (httpx.HTTPStatusError, httpx.RequestError):
-                result = {"name": tag}
+                result = {"name": tag, "unavailable": True}
         result["tag"] = tag
         league = result.get("leagueTier") or result.get("league") or {}
         result["leagueName"] = league.get("name") if isinstance(league, dict) else None
@@ -998,9 +917,10 @@ async def accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     primary = next((p["tag"] for p in profiles if p.get("isPrimary")), None)
-    await send_or_edit_message(update, profile_text(profiles, primary),
+    page = page_index(context.user_data.get("accounts_page",0),len(profiles),5)
+    await send_or_edit_message(update, profile_text(profiles, primary, page),
                                parse_mode=ParseMode.HTML,
-                               reply_markup=profile_keyboard(profiles))
+                               reply_markup=profile_keyboard(profiles, page))
 
 
 async def account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1008,9 +928,10 @@ async def account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     if not query or not ensure_private_chat(update) or not update.effective_user:
         return
-    await query.answer()
-    _, action, value = (query.data or "").split(":", 2)
+    await acknowledge(update)
+    _, action, value, *extra = (callback_data(update) or "").split(":")
     if action == "list":
+        context.user_data["accounts_page"] = int(value)
         await accounts(update, context)
         return
     profiles = context.user_data.get("own_profiles") or []
@@ -1031,10 +952,12 @@ async def account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if tag not in authorized:
         await send_or_edit_message(update, "Аккаунт больше не привязан к твоему Telegram.")
         return
-    if action == "view":
-        await send_or_edit_message(update, detail_text(selected, bool(selected.get("isPrimary"))),
+    if action in {"view", "heroes", "equipment"}:
+        section = "info" if action == "view" else action
+        page = int(extra[0]) if extra else 0
+        await send_or_edit_message(update, detail_text(selected, bool(selected.get("isPrimary")), section, page),
                                    parse_mode=ParseMode.HTML,
-                                   reply_markup=detail_keyboard(index, bool(selected.get("isPrimary"))))
+                                   reply_markup=detail_keyboard(index, bool(selected.get("isPrimary")), selected, section, page))
     elif action == "primary":
         storage.set_primary_account(settings.clan_group_id or 0, update.effective_user.id, tag)
         await accounts(update, context)
@@ -1053,6 +976,7 @@ async def account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         else:
             await send_or_edit_message(update, "Привязка уже удалена или принадлежит другому пользователю.")
     elif action == "progress":
+        context.user_data["progress_page"] = 0
         context.user_data["progress_index"] = index
         await show_owned_progress(update, context)
 
@@ -1061,35 +985,35 @@ async def primary_account(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not update.message or not update.effective_user or not ensure_private_chat(update):
         return
     if len(context.args) != 1:
-        await update.message.reply_text("Используй /primary #ТЕГ")
+        await send_or_edit_message(update, "Используй /primary #ТЕГ")
         return
     try:
         tag = normalize_tag(context.args[0])
     except InvalidTagError:
-        await update.message.reply_text("Неверный тег игрока.")
+        await send_or_edit_message(update, "Неверный тег игрока.")
         return
     storage: BindingsStorage = context.application.bot_data["storage"]
     if not storage.set_primary_account(settings.clan_group_id or 0, update.effective_user.id, tag):
-        await update.message.reply_text("Этот аккаунт тебе не принадлежит или не привязан.")
+        await send_or_edit_message(update, "Этот аккаунт тебе не принадлежит или не привязан.")
         return
-    await update.message.reply_text(f"⭐ {tag} выбран основным. Остальные твинковые привязки сохранены.")
+    await send_or_edit_message(update, f"⭐ {tag} выбран основным. Остальные твинковые привязки сохранены.")
 
 
 async def unlink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user or not ensure_private_chat(update):
         return
     if len(context.args) != 1:
-        await update.message.reply_text("Используй /unlink #ТЕГ. Удаляется только одна привязка.")
+        await send_or_edit_message(update, "Используй /unlink #ТЕГ. Удаляется только одна привязка.")
         return
     try:
         tag = normalize_tag(context.args[0])
     except InvalidTagError:
-        await update.message.reply_text("Неверный тег.")
+        await send_or_edit_message(update, "Неверный тег.")
         return
     storage: BindingsStorage = context.application.bot_data["storage"]
     success = storage.unlink_account(settings.clan_group_id or 0, tag,
                                      owner_id=update.effective_user.id)
-    await update.message.reply_text(
+    await send_or_edit_message(update,
         f"Привязка {tag} удалена из базы. Остальные аккаунты сохранены." if success
         else "Привязка не найдена или принадлежит другому пользователю."
     )
@@ -1100,20 +1024,20 @@ async def admin_unlink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not update.message or not update.effective_user or not ensure_private_chat(update):
         return
     if not await has_captain_access(update, context):
-        await update.message.reply_text("Только лидер или соруководитель клана.")
+        await send_or_edit_message(update, "Только лидер или соруководитель клана.")
         return
     if len(context.args) != 1:
-        await update.message.reply_text("Используй /adminunlink #ТЕГ")
+        await send_or_edit_message(update, "Используй /adminunlink #ТЕГ")
         return
     try:
         tag = normalize_tag(context.args[0])
     except InvalidTagError:
-        await update.message.reply_text("Неверный тег.")
+        await send_or_edit_message(update, "Неверный тег.")
         return
     storage: BindingsStorage = context.application.bot_data["storage"]
     success = storage.unlink_account(settings.clan_group_id or 0, tag)
     logger.info("Admin unlink actor=%s tag=%s success=%s", update.effective_user.id, tag, success)
-    await update.message.reply_text(
+    await send_or_edit_message(update,
         f"Привязка {tag} удалена. Игрок НЕ исключён из клана или группы." if success
         else "Привязка с таким тегом отсутствует."
     )
@@ -1141,29 +1065,29 @@ async def weights(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines += ["", "Сумма: 100%. Красная отметка CoC запрещает КВ и ЛВК.",
               "Нет истории: низкая уверенность, не ноль эффективности.",
               "Руководителям: /setweight cwl quality 45"]
-    await send_or_edit_message(update, "\n".join(lines), parse_mode=ParseMode.HTML)
+    await send_or_edit_message(update, "\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=back_buttons("menu_staff"))
 
 
 async def set_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user or not ensure_private_chat(update):
         return
     if not await has_captain_access(update, context):
-        await update.message.reply_text("Настраивать веса может только лидер или соруководитель CoC.")
+        await send_or_edit_message(update, "Настраивать веса может только лидер или соруководитель CoC.")
         return
     if len(context.args) != 3:
-        await update.message.reply_text("Пример: /setweight war quality 40\n"
+        await send_or_edit_message(update, "Пример: /setweight war quality 40\n"
                                         "war/cwl; strength discipline quality role.")
         return
     mode, metric, value_s = (v.lower() for v in context.args)
     if mode not in {"war", "cwl"} or metric not in {"strength", "discipline", "quality", "role"}:
-        await update.message.reply_text("Неверный режим или метрика.")
+        await send_or_edit_message(update, "Неверный режим или метрика.")
         return
     try:
         value = float(value_s)
         if not 0 <= value <= 100:
             raise ValueError
     except ValueError:
-        await update.message.reply_text("Нужен процент от 0 до 100.")
+        await send_or_edit_message(update, "Нужен процент от 0 до 100.")
         return
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
@@ -1171,9 +1095,9 @@ async def set_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                                          json={"mode": mode, "metric": metric, "value": value})
             response.raise_for_status()
     except (httpx.HTTPStatusError, httpx.RequestError):
-        await update.message.reply_text("Не удалось сохранить веса.")
+        await send_or_edit_message(update, "Не удалось сохранить веса.")
         return
-    await update.message.reply_text(f"✅ Веса {mode.upper()} обновлены.")
+    await send_or_edit_message(update, f"✅ Веса {mode.upper()} обновлены.")
     context.args = [mode]
     await weights(update, context)
 
@@ -1183,10 +1107,10 @@ async def last_seen_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not update.message or not update.effective_user or not ensure_private_chat(update):
         return
     if not await has_captain_access(update, context):
-        await update.message.reply_text("Ручное время входа может указывать только руководство.")
+        await send_or_edit_message(update, "Ручное время входа может указывать только руководство.")
         return
     if len(context.args) != 2:
-        await update.message.reply_text(
+        await send_or_edit_message(update,
             "Используй /lastseen #ТЕГ 3 — если в игре показано «3 дня назад».\n"
             "Для очистки: /lastseen #ТЕГ clear\n"
             "CoC API не предоставляет точное время последнего входа."
@@ -1198,14 +1122,14 @@ async def last_seen_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if days is not None and (not 0 <= days <= 30):
             raise ValueError
     except (InvalidTagError, ValueError):
-        await update.message.reply_text("Укажи корректный тег и число дней от 0 до 30 либо clear.")
+        await send_or_edit_message(update, "Укажи корректный тег и число дней от 0 до 30 либо clear.")
         return
     # Do not record non-clan members or unverified nickname guesses.
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             roster = await fetch_json(client, "/clan")
         if tag not in {m.get("tag") for m in roster.get("memberList") or []}:
-            await update.message.reply_text("Игрока с этим тегом сейчас нет в клане.")
+            await send_or_edit_message(update, "Игрока с этим тегом сейчас нет в клане.")
             return
         now = datetime.now(timezone.utc)
         stamp = (now - timedelta(days=days)).isoformat() if days is not None else None
@@ -1215,19 +1139,28 @@ async def last_seen_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                                            "reported_by": update.effective_user.id})
             resp.raise_for_status()
     except (httpx.HTTPStatusError, httpx.RequestError):
-        await update.message.reply_text("Не удалось сохранить отметку активности.")
+        await send_or_edit_message(update, "Не удалось сохранить отметку активности.")
         return
     message = (f"Ручная отметка последнего входа {tag}: {days:g} дн. назад."
                if days is not None else f"Для {tag} ручная отметка очищена.")
-    await update.message.reply_text(message + "\nИсточник: наблюдение руководства в игре, НЕ CoC API.")
+    await send_or_edit_message(update, message + "\nИсточник: наблюдение руководства в игре, НЕ CoC API.")
 
 
 
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.callback_query:
         return
-    await update.callback_query.answer()
-    action = update.callback_query.data
+    await acknowledge(update)
+    action = callback_data(update)
+    cancel_input_modes(context)
+    if action in {'menu_wars', 'menu_ratings', 'menu_community'}:
+        text, keyboard = hub_screen(action[5:])
+        await send_or_edit_message(update, text, reply_markup=keyboard)
+        return
+    if action in {'menu_ratingwar', 'menu_ratingcwl'}:
+        context.args = ['war' if action == 'menu_ratingwar' else 'cwl']
+        await clan_rating(update, context)
+        return
     handlers = {
         "menu_home": menu,
         "menu_topplayers": top_players,
@@ -1242,6 +1175,9 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "menu_cwl": cwl,
         "menu_rating": clan_rating,
         "menu_poll": create_poll,
+        "menu_polls": poll_list,
+        "menu_ops": operations,
+        "menu_warlog": war_history,
         "menu_progress": progress,
         "menu_captain": captain_report,
         "menu_staff": staff,
@@ -1254,18 +1190,18 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         context.args = []
         await handlers[action](update, context)
     elif action == "menu_report":
-        await update.callback_query.edit_message_text("Отчёт доступен только капитану.")
+        await send_or_edit_message(update, "Отчёт доступен только капитану.")
     else:
-        await update.callback_query.edit_message_text(
+        await send_or_edit_message(update,
             "Неизвестный раздел.", reply_markup=back_keyboard())
 
 
 async def bind_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.callback_query:
         return
-    await update.callback_query.answer()
+    await acknowledge(update)
     if not ensure_private_chat(update):
-        await update.callback_query.edit_message_text("Привязка доступна в личном чате бота.")
+        await send_or_edit_message(update, "Привязка доступна в личном чате бота.")
         return
     await show_player_picker(update, context)
 
@@ -1274,12 +1210,12 @@ async def bind_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not update.callback_query:
         return
     try:
-        await update.callback_query.answer()
+        await acknowledge(update)
         context.user_data.pop("awaiting_tag", None)
         context.user_data.pop("awaiting_player_token", None)
         context.user_data.pop("pending_coc_tag", None)
         context.user_data.pop("picker_members", None)
-        await update.callback_query.edit_message_text("Привязка отменена.")
+        await send_or_edit_message(update, "Привязка отменена.")
     except Exception:  # noqa: BLE001
         logger.exception("Failed to handle bind_cancel callback")
 
@@ -1288,6 +1224,8 @@ async def private_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Ensure a private message is processed only once."""
     if context.user_data.get("awaiting_tag") or context.user_data.get("awaiting_player_token"):
         await capture_tag(update, context)
+    elif context.user_data.get("plan_title"):
+        await context.application.bot_data["operations"].title_text(update, context)
     elif context.user_data.get("poll_draft"):
         await context.application.bot_data["polls"].text(update, context)
     else:
@@ -1308,8 +1246,8 @@ async def capture_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         raw_input = update.message.text or ""
         extracted = extract_tag(raw_input)
         if not extracted:
-            await update.message.reply_text(
-                "Invalid player tag format. Example: #2PRGP0L22",
+            await send_or_edit_message(update,
+                "Неверный формат тега игрока. Пример: #2PRGP0L22",
                 reply_markup=bind_cancel_keyboard(),
             )
             return
@@ -1319,8 +1257,8 @@ async def capture_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception:  # noqa: BLE001
         logger.exception("Failed to capture tag message")
         # Don't clear awaiting_tag - let user try again
-        await update.message.reply_text(
-            "Unexpected error occurred. Please try again.",
+        await send_or_edit_message(update,
+            "Не удалось выполнить действие. Попробуй ещё раз через штаб.",
             reply_markup=bind_cancel_keyboard(),
         )
 
@@ -1332,7 +1270,7 @@ async def verify_player_ownership(update: Update, context: ContextTypes.DEFAULT_
     tag = context.user_data.get("pending_coc_tag")
     if not tag:
         context.user_data.pop("awaiting_player_token", None)
-        await update.message.reply_text("Сессия привязки истекла. Отправьте /bind.")
+        await send_or_edit_message(update, "Сессия привязки истекла. Отправьте /bind.")
         return
     player_token = (update.message.text or "").strip()
     try:
@@ -1340,7 +1278,7 @@ async def verify_player_ownership(update: Update, context: ContextTypes.DEFAULT_
     except Exception:
         pass
     if not player_token or len(player_token) > 256:
-        await context.bot.send_message(update.effective_chat.id, "Неверный формат токена.")
+        await send_or_edit_message(update, "Неверный формат токена.")
         return
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
@@ -1352,17 +1290,17 @@ async def verify_player_ownership(update: Update, context: ContextTypes.DEFAULT_
             valid = response.json().get("verified") is True
     except httpx.HTTPStatusError as exc:
         logger.warning("Player verification failed: HTTP %s", exc.response.status_code)
-        await context.bot.send_message(update.effective_chat.id, "Ошибка проверки игрока. Повторите позже.")
+        await send_or_edit_message(update, "Ошибка проверки игрока. Повторите позже.")
         return
     except httpx.RequestError:
         logger.warning("Player verification service unreachable")
-        await context.bot.send_message(update.effective_chat.id, "Сервис проверки временно недоступен.")
+        await send_or_edit_message(update, "Сервис проверки временно недоступен.")
         return
     finally:
         player_token = None
     if not valid:
-        await context.bot.send_message(
-            update.effective_chat.id, "❌ Токен не подходит выбранному игроку. Попробуйте ещё раз."
+        await send_or_edit_message(
+            update, "❌ Токен не подходит выбранному игроку. Попробуйте ещё раз."
         )
         return
     context.user_data.pop("awaiting_player_token", None)
@@ -1374,12 +1312,12 @@ async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_chat:
         return
     if ensure_group_chat(update):
-        await update.message.reply_text(
+        await send_or_edit_message(update,
             f"Chat ID: `{update.effective_chat.id}`",
-            parse_mode=ParseMode.MARKDOWN,
+            parse_mode=ParseMode.HTML,
         )
         return
-    await update.message.reply_text(
+    await send_or_edit_message(update,
         "Please run /chatid in the target group chat to obtain its ID."
     )
 
@@ -1390,24 +1328,24 @@ async def grouplink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if not ensure_private_chat(update):
         return
-    
+
     try:
         # Check if user is bound
         storage: BindingsStorage = context.application.bot_data["storage"]
         binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
-        
+
         if not binding:
-            await update.message.reply_text(
+            await send_or_edit_message(update,
                 "❌ Вы не привязаны к боту. Используйте /bind чтобы привязаться."
             )
             return
-        
+
         if settings.clan_group_id is None:
-            await update.message.reply_text(
+            await send_or_edit_message(update,
                 "⚠️ Группа клана ещё не настроена. Свяжитесь с администратором."
             )
             return
-        
+
         # Generate new invite link
         expire_at = datetime.now(timezone.utc) + timedelta(minutes=settings.invite_ttl_minutes)
         invite = await context.bot.create_chat_invite_link(
@@ -1415,23 +1353,22 @@ async def grouplink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             expire_date=expire_at,
             member_limit=1,
         )
-        
+
         logger.info(
             "Group link sent user_id=%s tag=%s expire_at=%s",
             update.effective_user.id,
             binding.coc_player_tag,
             expire_at.isoformat(),
         )
-        
-        await update.message.reply_text(
+
+        await send_or_edit_message(update,
             f"✅ Ссылка для присоединения к группе клана:\n"
             f"{invite.invite_link}\n\n"
             f"⏱️ Ссылка действительна {settings.invite_ttl_minutes} минут",
-            disable_web_page_preview=True,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to send group link: %s", exc)
-        await update.message.reply_text(
+        await send_or_edit_message(update,
             "❌ Ошибка при создании ссылки. Попробуйте позже."
         )
 
@@ -1444,9 +1381,9 @@ async def settings_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not update.message:
         return
     if not ensure_private_chat(update):
-        await update.message.reply_text("Please use /settings in a private chat with the bot.")
+        await send_or_edit_message(update, "Открой /settings в личке бота.")
         return
-    await update.message.reply_text("⚙️ Настройки: привязка через /bind, изменение через /unbind.\n"
+    await send_or_edit_message(update, "⚙️ Настройки: привязка через /bind, изменение через /unbind.\n"
                                    "Параметры сервера хранятся в Home Assistant и не показываются участникам.")
 
 
@@ -1474,8 +1411,7 @@ async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"2. Нажать кнопку 'Привязать' и ввести свой тег\n\n"
                     f"После привязки вы сможете присоединиться к группе.",
                     parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                )
+                        )
                 # Remove from group (ban then unban to kick)
                 await context.bot.ban_chat_member(update.effective_chat.id, member.id)
                 await context.bot.unban_chat_member(update.effective_chat.id, member.id)
@@ -1491,11 +1427,10 @@ async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     exc,
                 )
             continue
-        
+
         # Member is bound - welcome them with CoC info
         mention = format_mention(member.id, member.full_name)
-        player_tag = html.escape(binding.coc_player_tag)
-        
+
         # Try to fetch player info for nickname
         coc_name = None
         try:
@@ -1507,20 +1442,13 @@ async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     coc_name = player_data.get("name", "")
         except Exception:  # noqa: BLE001
             pass  # Fallback if API fails
-        
+
         if coc_name:
             await assign_game_tag(context, update.effective_chat.id, member.id, coc_name)
 
-        # Welcome without pinning every new member or requiring pin permissions.
-        if coc_name:
-            message = (
-                f"✅ {mention}\n"
-                f"🎮 <b>Ник в игре:</b> {html.escape(coc_name)}\n"
-                f"🏷️ <b>Тег:</b> {player_tag}\n"
-                "Добро пожаловать в клан! 🎉"
-            )
-        else:
-            message = f"✅ {mention} присоединился как {player_tag}"
+        message, phrase = welcome_text(mention, coc_name or member.full_name, binding.coc_player_tag,
+                                      context.application.bot_data.get('last_welcome_phrase'))
+        context.application.bot_data['last_welcome_phrase'] = phrase
         try:
             await update.message.reply_text(
                 message, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
@@ -1535,18 +1463,18 @@ async def weekly_activity_report_job(context: ContextTypes.DEFAULT_TYPE) -> None
     now = datetime.now(timezone.utc)
     if now.weekday() != 6:  # Sunday
         return
-    
+
     # Get Lex's user ID from database using their CoC tag
     if not settings.lex_coc_tag:
         logger.warning("LEX_COC_TAG not configured for weekly activity report")
         return
-    
+
     storage: BindingsStorage = context.application.bot_data["storage"]
     lex_user_id = storage.get_user_id_by_tag(settings.clan_group_id or 0, settings.lex_coc_tag)
     if not lex_user_id:
         logger.warning("Lex not found in bindings by tag=%s", settings.lex_coc_tag)
         return
-    
+
     await send_activity_report_to_user(context, lex_user_id)
 
 
@@ -1559,9 +1487,8 @@ async def send_activity_report_to_user(context: ContextTypes.DEFAULT_TYPE, user_
             await context.bot.send_message(
                 chat_id=user_id,
                 text=message,
-                parse_mode=ParseMode.MARKDOWN,
-                disable_web_page_preview=True,
-            )
+                parse_mode=ParseMode.HTML,
+                )
             logger.info("Activity report sent to user %s", user_id)
         except httpx.HTTPStatusError as exc:
             logger.warning("Backend error fetching activity report: %s", exc)
@@ -1578,81 +1505,52 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
             payload = await fetch_json(client, "/war")
-        except httpx.HTTPStatusError as exc:
-            logger.warning("Backend error fetching war data: %s", exc)
+        except (httpx.HTTPStatusError, httpx.RequestError):
+            logger.warning("War data unavailable for reminders")
             return
-        except httpx.RequestError as exc:
-            logger.warning("Backend unreachable for war reminder: %s", exc)
-            return
-    if payload.get("state") != "inWar":
-        return
+    if payload.get("state") != "inWar": return
     end_time = parse_coc_time(payload.get("endTime"))
-    if end_time is None:
-        logger.warning("Could not parse war end time")
-        return
-    now = datetime.now(timezone.utc)
-    time_to_end = end_time - now
-    if time_to_end <= timedelta(0):
-        return
-    if time_to_end > timedelta(hours=settings.war_reminder_window_hours):
-        return
-    clan_members = payload.get("clan", {}).get("members", [])
-    tags_missing_attacks: set[str] = set()
-    members_by_tag: dict[str, dict] = {}
-    for member in clan_members:
-        attacks_allowed = int(payload.get("attacksPerMember") or 1)
-        if attacks_used(member) >= attacks_allowed or not member.get("tag"):
-            continue
+    identity = war_identity(payload)
+    if end_time is None or identity is None: return
+    remaining_time = end_time - datetime.now(timezone.utc)
+    if not timedelta(0) < remaining_time <= timedelta(hours=settings.war_reminder_window_hours): return
+    stage = "last30m" if remaining_time <= timedelta(minutes=30) else "window"
+    allowed = int(payload.get("attacksPerMember") or 1)
+    missing = {}
+    for member in (payload.get("clan") or {}).get("members") or []:
+        if attacks_used(member) >= allowed or not member.get("tag"): continue
         try:
-            tag = normalize_tag(member["tag"])
-            tags_missing_attacks.add(tag)
-            members_by_tag[tag] = member
+            missing[normalize_tag(member["tag"])] = member
         except InvalidTagError:
-            logger.warning("Skipping invalid member tag in war payload")
-    if not tags_missing_attacks:
-        return
+            continue
+    store = context.application.bot_data["reminders"]
     for group_id in storage.get_group_ids():
-        bindings = storage.get_bindings_for_tags(group_id, tags_missing_attacks)
-        if not bindings:
-            continue
-        # One Telegram user may own several CoC accounts in the same war.
-        # Mention the owner ONCE while listing all accounts still requiring attacks.
-        user_ids = sorted({binding.telegram_user_id for binding in bindings})
-        cooldowns = storage.get_cooldowns(group_id, user_ids)
-        grouped: dict[int, list[Binding]] = {}
-        for binding in bindings:
-            grouped.setdefault(binding.telegram_user_id, []).append(binding)
-        mentions: list[str] = []
-        reminded_user_ids: list[int] = []
-        for user_id, linked in grouped.items():
-            last_reminded = cooldowns.get(user_id)
-            if last_reminded and now - last_reminded < timedelta(hours=1):
-                continue
-            display = format_mention(user_id, linked[0].telegram_full_name)
-            games = []
-            for account in linked:
-                member = members_by_tag.get(account.coc_player_tag) or {}
-                game_name = html.escape(str(member.get("name") or account.coc_player_tag))
-                remaining = max(0, int(payload.get("attacksPerMember") or 1) - attacks_used(member))
-                if remaining:
-                    games.append(f"{game_name} ({remaining})")
-            if games:
-                mentions.append(f"{display}: " + ", ".join(games))
-                reminded_user_ids.append(user_id)
-        if not mentions:
-            continue
-        message = "⚔️ Остались атаки: " + "; ".join(mentions)
-        try:
-            await context.bot.send_message(
-                chat_id=group_id,
-                text=message,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to send reminder to group %s: %s", group_id, exc)
-            continue
-        storage.set_cooldowns(group_id, reminded_user_ids, now)
+        linked = storage.get_bindings_for_tags(group_id, missing)
+        grouped = {}
+        for account in linked: grouped.setdefault(account.telegram_user_id, []).append(account)
+        owners = store.claim(group_id,identity,stage,list(grouped))
+        if not owners: continue
+        lines = [f"⚔️ <b>Остались атаки · до конца {max(1,int(remaining_time.total_seconds()//60))} мин</b>"]
+        for owner in owners:
+            accounts = grouped[owner]
+            display = format_mention(owner, accounts[0].telegram_full_name[:24])
+            games = [f"{html.escape(str(missing[a.coc_player_tag].get('name') or a.coc_player_tag)[:24])} ({allowed-attacks_used(missing[a.coc_player_tag])})" for a in accounts]
+            lines.append(f"{display}: " + ", ".join(games))
+        # Chunk only when needed; every account stays visible. Claims survive restart.
+        chunks, current, length = [], [], 0
+        for line in lines:
+            from app.navigation import plain_text
+            width = len(plain_text(line).encode('utf-16-le'))//2 + 1
+            if current and length + width > 3800:
+                chunks.append("\n".join(current)); current, length = [], 0
+            current.append(line); length += width
+        if current: chunks.append("\n".join(current))
+        for message in chunks:
+            try:
+                await context.bot.send_message(chat_id=group_id,text=message,parse_mode=ParseMode.HTML,disable_web_page_preview=True)
+            except TelegramError:
+                logger.warning("Reminder delivery uncertain for group %s; no automatic resend",group_id)
+
 
 
 async def war_result_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1688,9 +1586,8 @@ async def war_result_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             await context.bot.send_message(
                 chat_id=settings.clan_group_id,
                 text=format_result(war, settings.coc_clan_tag),
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
+                parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                )
         except Exception:
             # Never log a raw Telegram API exception with an embedded bot token.
             # The ID stays reserved: better miss one message than spam on restart.
@@ -1746,7 +1643,7 @@ async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await send_or_edit_message(update, "Список игроков пока недоступен.")
 
 
-async def donations(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def donations(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0) -> None:
     roster = context.user_data.get("clan_player_roster")
     if roster is None:
         try:
@@ -1757,8 +1654,8 @@ async def donations(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except (httpx.HTTPStatusError, httpx.RequestError):
             await send_or_edit_message(update, "Не удалось получить текущий донат.")
             return
-    await send_or_edit_message(update, donation_text(roster), parse_mode=ParseMode.HTML,
-                               reply_markup=back_to_roster())
+    await send_or_edit_message(update, donation_text(roster, page), parse_mode=ParseMode.HTML,
+                               reply_markup=donation_keyboard(len(roster), page))
 
 
 async def hall_of_fame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1766,7 +1663,7 @@ async def hall_of_fame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             payload = await fetch_json(client, "/hall")
         await send_or_edit_message(update, hall_text(payload), parse_mode=ParseMode.HTML,
-                                   reply_markup=back_to_roster())
+                                   reply_markup=back_buttons("menu_ratings"))
     except (httpx.HTTPStatusError, httpx.RequestError):
         await send_or_edit_message(update, "Зал славы пока недоступен: данные не получены.")
 
@@ -1774,10 +1671,10 @@ async def hall_of_fame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def players_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.callback_query:
         return
-    await update.callback_query.answer()
-    _, action, raw_index = (update.callback_query.data or "").split(":")
+    await acknowledge(update)
+    _, action, raw_index, *extra = (callback_data(update) or "").split(":")
     if action == "donate":
-        await donations(update, context)
+        await donations(update, context, int(raw_index))
         return
     if action == "hall":
         await hall_of_fame(update, context)
@@ -1792,7 +1689,7 @@ async def players_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                                    parse_mode=ParseMode.HTML,
                                    reply_markup=players_roster_keyboard(roster, index))
         return
-    if action != "view" or not 0 <= index < len(roster):
+    if action not in {"view", "heroes", "equipment"} or not 0 <= index < len(roster):
         return
     tag = roster[index]["tag"]
     try:
@@ -1800,10 +1697,12 @@ async def players_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             profile_data = await fetch_json(client, f"/player/{encode_tag(tag)}")
         league = profile_data.get("leagueTier") or profile_data.get("league") or {}
         profile_data["leagueName"] = league.get("name") if isinstance(league, dict) else None
-        await send_or_edit_message(update, detail_text(profile_data), parse_mode=ParseMode.HTML,
-                                   reply_markup=back_to_roster(index // 8))
+        section = "info" if action == "view" else action
+        page = int(extra[0]) if extra else 0
+        await send_or_edit_message(update, detail_text(profile_data, section=section, page=page), parse_mode=ParseMode.HTML,
+                                   reply_markup=detail_keyboard(index, False, profile_data, section, page, own=False))
     except (httpx.HTTPStatusError, httpx.RequestError):
-        await send_or_edit_message(update, "Не удалось загрузить профиль игрока.")
+        await send_or_edit_message(update, "Не удалось загрузить профиль игрока.", reply_markup=back_buttons(f"players:page:{index//8}"))
 
 
 async def clan_raids(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1812,7 +1711,7 @@ async def clan_raids(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             payload = await fetch_json(client, "/raids")
-        await send_or_edit_message(update, format_raid_message(payload), parse_mode=ParseMode.HTML)
+        await send_or_edit_message(update, format_raid_message(payload), parse_mode=ParseMode.HTML, reply_markup=back_buttons("menu_community"))
     except (httpx.HTTPStatusError, httpx.RequestError):
         logger.exception("Raid API unavailable")
         await send_or_edit_message(update, "🏛️ Не удалось получить данные о рейдах.")
@@ -1825,29 +1724,29 @@ async def clan_games(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
             payload = await fetch_json(client, "/games")
-            
+
             # If no data or no games info, send message
             if not payload or "currentGames" not in payload:
                 message = "ℹ️ Информация об играх кланов недоступна."
                 await send_or_edit_message(update, message)
                 return
-            
+
             current_games = payload.get("currentGames")
             if not current_games:
                 message = ("ℹ️ Clash of Clans API не предоставляет данные об Играх кланов."
                            if payload.get("unsupported") else "ℹ️ Информация об играх недоступна.")
                 await send_or_edit_message(update, message)
                 return
-            
+
             # Format games info
             state = current_games.get("state", "unknown")
             start_time = current_games.get("startTime", "N/A")
             end_time = current_games.get("endTime", "N/A")
-            
+
             if state == "inProgress":
                 # Show current score
                 score = current_games.get("score", "N/A")
-                
+
                 msg = "🎮 *Игры кланов*\n\n"
                 msg += "*Статус:* Идут в данный момент 🏁\n"
                 msg += f"*Начало:* {start_time}\n"
@@ -1859,17 +1758,17 @@ async def clan_games(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 msg += "*Статус:* Не проводятся\n"
                 msg += f"*Начало:* {start_time}\n"
                 msg += f"*Конец:* {end_time}\n"
-            
+
             await send_or_edit_message(update, msg)
         except httpx.HTTPStatusError as exc:
             logger.warning("Backend error: %s", exc)
             await send_or_edit_message(update, "ℹ️ Информация об играх недоступна.")
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
-            await send_or_edit_message(update, "Backend is unreachable.")
+            await send_or_edit_message(update, "Сервис данных временно недоступен.")
         except Exception:  # noqa: BLE001
             logger.exception("Unhandled error in /clan-raids")
-            await send_or_edit_message(update, "Unexpected error occurred.")
+            await send_or_edit_message(update, "Не удалось выполнить действие. Попробуй ещё раз через штаб.")
 
 
 async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1878,7 +1777,7 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     text = update.message.text
-    
+
     # Detect if bot is mentioned
     bot_username = None
     try:
@@ -1892,7 +1791,7 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if bot_username and f"@{bot_username}" in (text or "").lower():
         mentioned = True
         logger.info("ai_reply_handler: bot mentioned directly in text")
-    
+
     # Check if replying to bot's message
     if not mentioned and update.message.reply_to_message:
         try:
@@ -1911,7 +1810,7 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     logger.info("AI reply requested in chat %s", update.effective_chat.id if update.effective_chat else "?")
-    
+
     # Try Groq API (free, fast)
     groq_key = os.getenv("GROQ_API_KEY")
     if groq_key:
@@ -1919,7 +1818,7 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         try:
             from groq import Groq
             client = Groq(api_key=groq_key)
-            
+
             # Use the fastest free model available
             response = client.chat.completions.create(
                 model="mixtral-8x7b-32768",  # Free tier model
@@ -1930,7 +1829,7 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 max_tokens=256,
                 temperature=0.7,
             )
-            
+
             reply = response.choices[0].message.content.strip()
             if reply:
                 logger.info(f"ai_reply_handler: Groq reply: {reply[:100]}")
@@ -1997,10 +1896,12 @@ async def show_owned_progress(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             response.raise_for_status()
             data = response.json()
+        count = len(progress_changes(data))
+        page = page_index(context.user_data.get("progress_page",0),count,15)
         await send_or_edit_message(
             update,
-            progress_text(data, player.get("name") or player["tag"], days),
-            parse_mode=ParseMode.HTML, reply_markup=progress_keyboard(profiles,idx,days),
+            progress_text(data, player.get("name") or player["tag"], days, page),
+            parse_mode=ParseMode.HTML, reply_markup=progress_keyboard(profiles,idx,days,page,max(1,(count+14)//15)),
         )
     except (httpx.HTTPStatusError, httpx.RequestError):
         await send_or_edit_message(update, "Сейчас не удалось получить историю. Попробуй позднее.")
@@ -2017,11 +1918,15 @@ async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def growth_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.callback_query or not ensure_private_chat(update):
         return
-    await update.callback_query.answer()
-    days = int((update.callback_query.data or "").rsplit(":",1)[-1])
-    if days not in {0,7,30}:
-        return
-    context.user_data["progress_days"] = days
+    await acknowledge(update)
+    _,kind,value = callback_data(update).split(":")
+    if kind == "page":
+        context.user_data["progress_page"] = int(value)
+    else:
+        days = int(value)
+        if days not in {0,7,30}: return
+        context.user_data["progress_days"] = days
+        context.user_data["progress_page"] = 0
     await show_owned_progress(update, context)
 
 
@@ -2031,10 +1936,12 @@ async def cwl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         async with httpx.AsyncClient(timeout=max(45, settings.request_timeout_seconds)) as client:
             payload = await fetch_json(client, "/cwl")
-        await send_or_edit_message(update, format_cwl_message(payload), parse_mode=ParseMode.HTML)
+        context.user_data['cwl_snapshot'] = payload
+        text, keyboard = cwl_screen(payload)
+        await send_or_edit_message(update, text, reply_markup=keyboard)
     except (httpx.HTTPStatusError, httpx.RequestError):
         logger.warning("CWL service unavailable")
-        await send_or_edit_message(update, "🏆 Сведения о CWL пока недоступны.")
+        await send_or_edit_message(update, "🏆 Сведения о CWL пока недоступны.", reply_markup=back_buttons("menu_wars"))
 
 
 async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2061,7 +1968,7 @@ async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     params = {"mode": mode}
     if mode == "war" and context.user_data.get("lineup_size"):
         params["size"] = context.user_data["lineup_size"]
-    msg = await send_or_edit_message(update, "⏳ Анализирую реальные войны и согласие игроков...",
+    await send_or_edit_message(update, "⏳ Анализирую реальные войны и согласие игроков...",
                                      parse_mode=None)
     try:
         async with httpx.AsyncClient(timeout=max(60, settings.request_timeout_seconds)) as client:
@@ -2088,6 +1995,8 @@ async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         context.user_data["lineup_snapshot"] = data
         captain = await has_captain_access(update, context)
         stage = context.user_data.pop("lineup_target_stage", "main")
+        context.user_data["lineup_stage"] = stage
+        context.user_data["lineup_origin"] = (stage, 0)
         if stage in {"kick","promotion","bonus"} and not captain:
             stage = "main"
         await send_or_edit_message(
@@ -2096,19 +2005,21 @@ async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
     except (httpx.HTTPStatusError, httpx.RequestError):
         logger.warning("Lineup backend unavailable")
-        await msg.edit_text("Не удалось получить состав. Проверь соединение с Clash API.",
+        await send_or_edit_message(update, "Не удалось получить состав. Проверь соединение с Clash API.",
                             reply_markup=back_keyboard())
     except Exception:
         logger.exception("Lineup render failed")
-        await msg.edit_text("Ошибка формирования состава. Подробности в журнале аддона.",
+        await send_or_edit_message(update, "Ошибка формирования состава. Подробности в журнале аддона.",
                             reply_markup=back_keyboard())
 
 
 async def lineup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.callback_query:
         return
-    await update.callback_query.answer()
-    _, stage, page_raw = (update.callback_query.data or "").split(":", 2)
+    await acknowledge(update)
+    _, stage, page_raw = (callback_data(update) or "").split(":", 2)
+    if stage in {"mode", "refresh"}:
+        context.user_data["lineup_target_stage"] = context.user_data.get("lineup_stage", "main")
     if stage == "mode":
         if page_raw not in {"war", "cwl"}:
             return
@@ -2131,7 +2042,7 @@ async def lineup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     snapshot = context.user_data.get("lineup_snapshot")
     if not snapshot:
-        await send_or_edit_message(update, 
+        await send_or_edit_message(update,
             "Сессия устарела. Перезагрузи состав.",
             reply_markup=InlineKeyboardMarkup(
                 [[InlineKeyboardButton("🔄 Обновить", callback_data="menu_nextwar")]]
@@ -2140,16 +2051,77 @@ async def lineup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     captain = await has_captain_access(update, context)
     if stage in {"kick", "promotion", "bonus"} and not captain:
-        await send_or_edit_message(update, 
+        await send_or_edit_message(update,
             "Раздел руководства. Недостаточно прав.",
             reply_markup=back_keyboard(),
         )
         return
     page = max(0, min(50, int(page_raw)))
-    await send_or_edit_message(update, 
+    if stage == "player":
+        snapshot["playerOrigin"] = context.user_data.get("lineup_origin", ("ranking", 0))
+    else:
+        context.user_data["lineup_origin"] = (stage, page)
+        context.user_data["lineup_stage"] = stage
+    await send_or_edit_message(update,
         lineup_message(snapshot, stage, page), parse_mode=ParseMode.HTML,
         reply_markup=lineup_keyboard(stage, page, snapshot, captain=captain),
     )
+
+
+async def cwl_callback(update, context):
+    await acknowledge(update)
+    data = context.user_data.get('cwl_snapshot')
+    if data is None:
+        await cwl(update, context)
+        return
+    _, action, number = callback_data(update).split(':')
+    text, keyboard = cwl_screen(data, int(number) if action == 'round' else 0)
+    await send_or_edit_message(update, text, reply_markup=keyboard)
+
+
+async def war_history(update, context):
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            data = await fetch_json(client, '/war-results')
+        context.user_data['warlog'] = data.get('wars') or []
+        text, keyboard = warlog_screen(context.user_data['warlog'])
+        await send_or_edit_message(update, text, reply_markup=keyboard)
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        await send_or_edit_message(update, 'История временно недоступна. Попробуй позже.', reply_markup=back_buttons('menu_wars'))
+
+
+async def warlog_callback(update, context):
+    await acknowledge(update)
+    wars = context.user_data.get('warlog')
+    if wars is None:
+        await war_history(update, context)
+        return
+    _, action, value, *extra = callback_data(update).split(':')
+    index = int(value)
+    if action == 'view' and index < len(wars):
+        text, keyboard = war_review(wars[index], index, int(extra[0]) if extra else 0)
+    else:
+        text, keyboard = warlog_screen(wars, index)
+    await send_or_edit_message(update, text, reply_markup=keyboard)
+
+
+async def fetch_for_operations(path, params=None):
+    async with httpx.AsyncClient(timeout=max(60, settings.request_timeout_seconds)) as client:
+        response = await client.get(build_url(path), params=params)
+        response.raise_for_status()
+        return response.json()
+
+
+async def operations(update, context):
+    await context.application.bot_data['operations'].home(update, context)
+
+
+async def readiness(update, context):
+    await context.application.bot_data['operations'].home(update, context, personal=True)
+
+
+async def poll_list(update, context):
+    await context.application.bot_data['polls'].listing(update, context)
 
 
 async def create_poll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2159,6 +2131,88 @@ async def create_poll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def clan_rating(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["lineup_target_stage"] = "ranking"
     await next_war_analysis(update, context)
+
+
+def callback_routes(context):
+    return [
+        (r'bind_start', bind_start), (r'bind_cancel', bind_cancel),
+        (r'pick:(manual|page|player):[0-9]+', roster_callback),
+        (r'menu_[a-z]+', menu_callback),
+        (r'players:(view|page|hall|donate):[0-9]+|players:(heroes|equipment):[0-9]+:[0-9]+', players_callback),
+        (r'acct:(list|view|primary|delete|confirm|progress):[0-9]+|acct:(heroes|equipment):[0-9]+:[0-9]+', account_callback),
+        (r'inspect:view:0|inspect:(heroes|equipment):0:[0-9]+', inspect_callback),
+        (r'warpage:[0-9]+', warpage_callback),
+        (r'growth:days:(0|7|30)|growth:page:[0-9]+', growth_callback),
+        (r'staff:(promotion|kick|bonus)', staff_callback),
+        (r'lineup:(main|bench|ranking|filters|size|teamsize|details|about|player|refresh|inactive|optout|needs_review|cwl_review|twinks|kick|promotion|bonus|weights):[0-9]+|lineup:mode:(war|cwl)', lineup_callback),
+        (r'poll:(done|time|add|remove|publish|cancel|duration:[0-9]+)', context.application.bot_data['polls'].callback),
+        (r'poll:list:[0-9]+|poll:view:[0-9]+:[0-9]+', context.application.bot_data['polls'].browse),
+        (r'cwl:(table|round):[0-9]+', cwl_callback),
+        (r'warlog:list:[0-9]+|warlog:view:[0-9]+:[0-9]+', warlog_callback),
+        (r'ops:.*', context.application.bot_data['operations'].callback),
+    ]
+
+
+async def dispatch_callback(update, context):
+    await navigator.dispatch(update, context, callback_routes(context), context.application.bot_data['polls'].vote)
+
+
+def register_handlers(application):
+    """The same complete route registry is used in production and offline UI checks."""
+    application.add_handler(CommandHandler("poll", create_poll))
+
+    application.add_handler(TypeHandler(Update, ignore_duplicate_update), group=-2)
+    application.add_handler(MessageHandler(filters.COMMAND, log_any_command), group=-1)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("menu", menu))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("clan", clan))
+    application.add_handler(CommandHandler("topplayers", top_players))
+    application.add_handler(CommandHandler("donate", donations))
+    application.add_handler(CommandHandler("hall", hall_of_fame))
+    application.add_handler(CommandHandler("player", player))
+    application.add_handler(CommandHandler("war", war))
+    application.add_handler(CommandHandler("nextwar", next_war_analysis))
+    application.add_handler(CommandHandler("cwl", cwl))
+    application.add_handler(CommandHandler("rating", clan_rating))
+    application.add_handler(CommandHandler("ready", readiness))
+    application.add_handler(CommandHandler("lineup", operations))
+    application.add_handler(CommandHandler("history", war_history))
+    application.add_handler(CommandHandler("progress", progress))
+    application.add_handler(CommandHandler("captain", captain_report))
+    application.add_handler(CommandHandler("staff", staff))
+    application.add_handler(CommandHandler("raids", clan_raids))
+    application.add_handler(CommandHandler("games", clan_games))
+    application.add_handler(CommandHandler("ping", ping))
+    application.add_handler(CommandHandler("bind", bind))
+    application.add_handler(CommandHandler("unbind", unbind))
+    application.add_handler(CommandHandler("accounts", accounts))
+    application.add_handler(CommandHandler("primary", primary_account))
+    application.add_handler(CommandHandler("unlink", unlink))
+    application.add_handler(CommandHandler("adminunlink", admin_unlink))
+    application.add_handler(CommandHandler("weights", weights))
+    application.add_handler(CommandHandler("setweight", set_weight))
+    application.add_handler(CommandHandler("lastseen", last_seen_report))
+    application.add_handler(CommandHandler("mytag", mytag))
+    application.add_handler(CommandHandler("chatid", chatid))
+    application.add_handler(CommandHandler("grouplink", grouplink))
+    application.add_handler(CommandHandler("profile", profile))
+    application.add_handler(CommandHandler("settings", settings_info))
+    application.add_handler(CallbackQueryHandler(dispatch_callback))
+
+    # One router avoids two handlers replying to a successful token message.
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, private_text_router),
+        group=0,
+    )
+
+    # AI mention handler: replies when the bot is mentioned or replied-to (group=2 to run last)
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, ai_reply_handler),
+        group=2,
+    )
+    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, verify_new_members))
+    application.add_error_handler(handle_handler_exception)
 
 
 async def main() -> None:
@@ -2185,72 +2239,15 @@ async def main() -> None:
 
     application.bot_data["storage"] = BindingsStorage(settings.bindings_db_path)
     application.bot_data["war_outcomes"] = WarAnnouncementStore(settings.bindings_db_path)
+    application.bot_data["reminders"] = ReminderStore(settings.bindings_db_path)
     polls = PollController(PollStore(settings.bindings_db_path), settings.clan_group_id,
                            has_captain_access, send_or_edit_message)
     application.bot_data["polls"] = polls
-    application.add_handler(CommandHandler("poll", create_poll))
-    application.add_handler(CallbackQueryHandler(polls.callback, pattern=r"^poll:(done|time|add|publish|cancel|duration:[0-9]+)$"))
-    application.add_handler(CallbackQueryHandler(polls.vote, pattern=r"^vote:[0-9]+:[0-9]+$"))
+    application.bot_data['operations'] = Operations(
+        WarPlanStore(settings.bindings_db_path), application.bot_data['storage'],
+        settings.coc_clan_tag, settings.clan_group_id, has_captain_access, send_or_edit_message, fetch_for_operations)
+    register_handlers(application)
     application.job_queue.run_repeating(polls.finish_due, interval=30, first=5, name="clan-poll-results")
-
-    application.add_handler(MessageHandler(filters.COMMAND, log_any_command), group=-1)
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("menu", menu))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("clan", clan))
-    application.add_handler(CommandHandler("topplayers", top_players))
-    application.add_handler(CommandHandler("donate", donations))
-    application.add_handler(CommandHandler("hall", hall_of_fame))
-    application.add_handler(CommandHandler("player", player))
-    application.add_handler(CommandHandler("war", war))
-    application.add_handler(CommandHandler("nextwar", next_war_analysis))
-    application.add_handler(CommandHandler("cwl", cwl))
-    application.add_handler(CommandHandler("rating", clan_rating))
-    application.add_handler(CommandHandler("progress", progress))
-    application.add_handler(CommandHandler("captain", captain_report))
-    application.add_handler(CommandHandler("staff", staff))
-    application.add_handler(CommandHandler("raids", clan_raids))
-    application.add_handler(CommandHandler("games", clan_games))
-    application.add_handler(CommandHandler("ping", ping))
-    application.add_handler(CommandHandler("bind", bind))
-    application.add_handler(CommandHandler("unbind", unbind))
-    application.add_handler(CommandHandler("accounts", accounts))
-    application.add_handler(CommandHandler("primary", primary_account))
-    application.add_handler(CommandHandler("unlink", unlink))
-    application.add_handler(CommandHandler("adminunlink", admin_unlink))
-    application.add_handler(CommandHandler("weights", weights))
-    application.add_handler(CommandHandler("setweight", set_weight))
-    application.add_handler(CommandHandler("lastseen", last_seen_report))
-    application.add_handler(CommandHandler("mytag", mytag))
-    application.add_handler(CommandHandler("chatid", chatid))
-    application.add_handler(CommandHandler("grouplink", grouplink))
-    application.add_handler(CommandHandler("profile", profile))
-    application.add_handler(CommandHandler("settings", settings_info))
-    application.add_handler(CallbackQueryHandler(bind_start, pattern="^bind_start$"))
-    application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
-    application.add_handler(CallbackQueryHandler(roster_callback, pattern=r"^pick:(manual|page|player):[0-9]+$"))
-    application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
-    application.add_handler(CallbackQueryHandler(players_callback, pattern=r"^players:(view|page|hall|donate):[0-9]+$"))
-    application.add_handler(CallbackQueryHandler(account_callback, pattern=r"^acct:(list|view|primary|delete|confirm|progress):[0-9]+$"))
-    application.add_handler(CallbackQueryHandler(growth_callback, pattern=r"^growth:days:(0|7|30)$"))
-    application.add_handler(CallbackQueryHandler(staff_callback, pattern=r"^staff:(promotion|kick|bonus)$"))
-    application.add_handler(CallbackQueryHandler(
-        lineup_callback, pattern=r"^lineup:(main|bench|ranking|size|teamsize|details|about|player|refresh|inactive|optout|needs_review|cwl_excluded|twinks|kick|promotion|bonus|weights):[0-9]+$|^lineup:mode:(war|cwl)$"
-    ))
-    
-    # One router avoids two handlers replying to a successful token message.
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, private_text_router),
-        group=0,
-    )
-
-    # AI mention handler: replies when the bot is mentioned or replied-to (group=2 to run last)
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, ai_reply_handler),
-        group=2,
-    )
-    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, verify_new_members))
-    application.add_error_handler(handle_handler_exception)
 
     if settings.clan_group_id is not None:
         application.job_queue.run_daily(
@@ -2283,7 +2280,7 @@ async def main() -> None:
         logger.exception("Could not sync Telegram command menu")
     await application.start()
     await application.updater.start_polling()
-    
+
     # Register weekly activity report after polling starts
     if settings.lex_coc_tag:
         application.job_queue.run_daily(

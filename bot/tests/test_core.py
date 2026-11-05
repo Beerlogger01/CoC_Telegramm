@@ -21,14 +21,14 @@ def test_player_token_setting_default():
     assert Settings().require_player_verification is True
 
 
-def test_player_names_are_escaped_for_legacy_markdown():
+def test_player_names_use_safe_html_without_markdown_escapes():
     message = format_player(
         {
-            "name": "A_*[Player]",
+            "name": "A_*[Player]<&>",
             "tag": "#2PRGP0L22",
             "clan": {"name": "Clan_(test)"},
         }
     )
 
-    assert r"A\_\*\[Player]" in message
-    assert r"Clan\_(test)" in message
+    assert "A_*[Player]&lt;&amp;&gt;" in message
+    assert "<b>A_*[Player]&lt;&amp;&gt;</b>" in message
