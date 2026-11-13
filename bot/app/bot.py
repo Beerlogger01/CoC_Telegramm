@@ -23,6 +23,7 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 
+from app.widgets import Widgets, dispatch_widget, WidgetUpdateProcessor
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
 from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
@@ -416,6 +417,9 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user:
         return
     cancel_input_modes(context)
+    widgets = context.application.bot_data.get("widgets")
+    if widgets and await widgets.open(update, context):
+        return
     storage: BindingsStorage = context.application.bot_data["storage"]
     binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
     who = html.escape(binding.coc_player_tag) if binding else "не привязан"
@@ -2157,8 +2161,20 @@ async def dispatch_callback(update, context):
     await navigator.dispatch(update, context, callback_routes(context), context.application.bot_data['polls'].vote)
 
 
+async def widget_mode(update, context):
+    if not update.effective_chat or update.effective_chat.type != "private":
+        return
+    widgets = context.application.bot_data.get("widgets")
+    if widgets:
+        mode = "classic" if update.effective_message.text.split()[0].split("@")[0] == "/classic" else "widgets"
+        widgets.store.preference(update.effective_user.id, mode)
+    await menu(update, context)
+
+
 def register_handlers(application):
     """The same complete route registry is used in production and offline UI checks."""
+    application.add_handler(TypeHandler(Update, dispatch_widget), group=-3)
+    application.add_handler(CommandHandler(["classic", "widgets"], widget_mode))
     application.add_handler(CommandHandler("poll", create_poll))
 
     application.add_handler(TypeHandler(Update, ignore_duplicate_update), group=-2)
@@ -2235,7 +2251,10 @@ async def main() -> None:
 
     from telegram.request import HTTPXRequest
     request = HTTPXRequest(read_timeout=settings.request_timeout_seconds)
-    application = ApplicationBuilder().token(settings.telegram_bot_token).request(request).build()
+    builder = ApplicationBuilder().token(settings.telegram_bot_token).request(request)
+    if settings.widgets_enabled:
+        builder = builder.concurrent_updates(WidgetUpdateProcessor())
+    application = builder.build()
 
     application.bot_data["storage"] = BindingsStorage(settings.bindings_db_path)
     application.bot_data["war_outcomes"] = WarAnnouncementStore(settings.bindings_db_path)
@@ -2246,6 +2265,7 @@ async def main() -> None:
     application.bot_data['operations'] = Operations(
         WarPlanStore(settings.bindings_db_path), application.bot_data['storage'],
         settings.coc_clan_tag, settings.clan_group_id, has_captain_access, send_or_edit_message, fetch_for_operations)
+    application.bot_data["widgets"] = Widgets(settings.bindings_db_path, application.bot_data["storage"])
     register_handlers(application)
     application.job_queue.run_repeating(polls.finish_due, interval=30, first=5, name="clan-poll-results")
 
@@ -2279,7 +2299,7 @@ async def main() -> None:
     except Exception:
         logger.exception("Could not sync Telegram command menu")
     await application.start()
-    await application.updater.start_polling()
+    await application.updater.start_polling(allowed_updates=list(Update.ALL_TYPES) + ["widget_query"])
 
     # Register weekly activity report after polling starts
     if settings.lex_coc_tag:

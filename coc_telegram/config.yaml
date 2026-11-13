@@ -1,5 +1,5 @@
 name: Clash of Clans Telegram Bot
-version: "0.3.0"
+version: "0.4.0"
 slug: coc_telegram
 description: Independent Clash of Clans Telegram bot with war analytics
 url: https://github.com/Beerlogger01/CoC_Telegramm
@@ -26,6 +26,7 @@ options:
   cache_ttl_seconds: 180
   request_timeout_seconds: 20
   debug: false
+  widgets_enabled: false
 schema:
   telegram_bot_token: password
   coc_token: password
@@ -41,3 +42,4 @@ schema:
   cache_ttl_seconds: int(30,3600)
   request_timeout_seconds: int(5,120)
   debug: bool
+  widgets_enabled: bool

@@ -19,3 +19,7 @@
 - Отдельный рейтинг всего клана: `/rating war`, `/rating cwl`.
 - Голосования: вопрос, варианты, длительность, предпросмотр, публикация и автоматические итоги. Голоса и сроки сохраняются после перезапуска.
 - Подарки не добавлены. Онлайн и уровни зданий недоступны через официальный API.
+
+## 0.4.0 — opt-in private Widgets
+
+Add private HTML dashboard for accounts, growth, war, CWL and ratings. Existing authorized operational menus remain accessible from the dashboard; groups keep their current interface. Enable widgets_enabled, use /widgets; /classic restores the prior interface. See docs/widgets/README.md for scope and verification limits.
