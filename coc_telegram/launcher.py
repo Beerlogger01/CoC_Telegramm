@@ -38,6 +38,7 @@ def build_env(options_path: Path) -> dict[str, str]:
         "cache_ttl_seconds": "CACHE_TTL_SECONDS",
         "request_timeout_seconds": "REQUEST_TIMEOUT_SECONDS",
         "debug": "DEBUG",
+        "widgets_enabled": "WIDGETS_ENABLED",
     }
     for name, key in fields.items():
         value = options.get(name)
