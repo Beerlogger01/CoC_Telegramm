@@ -23,7 +23,8 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 
-from app.widgets import Widgets, dispatch_widget, WidgetUpdateProcessor
+from app.sessions import SessionContext, SessionUpdateProcessor
+from app.widgets import Widgets, dispatch_widget
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
 from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
@@ -2250,10 +2251,9 @@ async def main() -> None:
     logger.info("Environment validation passed")
 
     from telegram.request import HTTPXRequest
-    request = HTTPXRequest(read_timeout=settings.request_timeout_seconds)
+    request = HTTPXRequest(connection_pool_size=24, pool_timeout=3, read_timeout=settings.request_timeout_seconds)
     builder = ApplicationBuilder().token(settings.telegram_bot_token).request(request)
-    if settings.widgets_enabled:
-        builder = builder.concurrent_updates(WidgetUpdateProcessor())
+    builder = builder.context_types(ContextTypes(context=SessionContext)).concurrent_updates(SessionUpdateProcessor())
     application = builder.build()
 
     application.bot_data["storage"] = BindingsStorage(settings.bindings_db_path)
@@ -2315,6 +2315,7 @@ async def main() -> None:
     finally:
         await application.updater.stop()
         await application.stop()
+        await application.bot_data["widgets"].close()
         await application.shutdown()
         logger.info("Telegram bot shutdown complete")
 

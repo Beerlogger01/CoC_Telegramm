@@ -126,7 +126,7 @@ def test_send_query_edit_answer_and_restart(tmp_path, monkeypatch):
         await w.query(query(token), bot)
         assert (
             sum(c.args[0] == "editMessageWidgetData" for c in bot._post.call_args_list)
-            == count
+            == count + 1
         )
 
     asyncio.run(run())
@@ -226,7 +226,7 @@ def test_view_state_size_and_multiple_accounts():
             )
             assert len(encode_state(data).encode()) <= 1024
         data, buttons = await view({"s": "accounts"}, 7, storage, 0, fetch)
-        assert {r["tag"] for _, r in buttons if "tag" in r} == {"#P0Y", "#P0Q"}
+        assert {r["tag"] for r in data["_actions"]} == {"#P0Y", "#P0Q"}
 
     asyncio.run(run())
 
@@ -253,7 +253,7 @@ def test_widget_reply_is_not_queued_behind_legacy_handler():
         await entered.wait()
         await asyncio.wait_for(
             processor.process_update(
-                SimpleNamespace(api_kwargs={"widget_query": {}}), fast()
+                SimpleNamespace(api_kwargs={"widget_query": {"chat":{"id":7},"from":{"id":7}}}), fast()
             ),
             0.1,
         )

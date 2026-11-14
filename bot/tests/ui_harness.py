@@ -8,7 +8,8 @@ from types import SimpleNamespace
 
 import httpx
 from telegram import Update
-from telegram.ext import ApplicationBuilder
+from telegram.ext import ApplicationBuilder, ContextTypes
+from app.sessions import SessionContext
 from telegram.request import BaseRequest
 
 from app import bot as handlers
@@ -263,6 +264,7 @@ class Harness:
         )
         self.app = (
             ApplicationBuilder()
+            .context_types(ContextTypes(context=SessionContext))
             .token(TOKEN)
             .request(self.request)
             .get_updates_request(self.request)
@@ -405,7 +407,7 @@ class Harness:
 
     @property
     def screen(self):
-        state = navigator.screens.get(self.user)
+        state = navigator.screens.get((self.chat, self.user))
         assert state and state.message, (
             f"No screen for {self.user}; errors={self.errors}"
         )
@@ -477,5 +479,5 @@ class Harness:
         return SimpleNamespace(
             bot=self.app.bot,
             application=self.app,
-            user_data=self.app.user_data[self.user],
+            user_data=self.app.user_data[self.user].setdefault("_chat_sessions", {}).setdefault(self.chat, {}),
         )

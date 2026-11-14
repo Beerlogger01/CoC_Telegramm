@@ -12,7 +12,7 @@ def test_addon_metadata_matches_published_image():
 
     assert config["arch"] == ["aarch64", "amd64"]
     assert config["image"] == "ghcr.io/beerlogger01/coc-telegram"
-    assert config["version"] == "0.4.0"
+    assert config["version"] == "0.4.1"
     assert repository["url"] == config["url"]
 
 

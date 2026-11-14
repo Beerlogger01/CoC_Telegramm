@@ -104,7 +104,7 @@ def test_complete_menu_profiles_ratings_history_and_cwl(monkeypatch, tmp_path):
             await h.click("acct:progress:23")
             await h.click("growth:days:30")
             await h.click("acct:view:23")
-            chosen = h.app.user_data[OWNER]["own_profiles"][23]["tag"]
+            chosen = h.context.user_data["own_profiles"][23]["tag"]
             await h.click("acct:primary:23")
             assert h.storage.get_binding(GROUP, OWNER).coc_player_tag == chosen
             await h.click("acct:view:23")
@@ -162,7 +162,7 @@ def test_stale_foreign_duplicate_and_missing_message_callbacks(monkeypatch, tmp_
             assert (
                 len(h.sends(OWNER)) == 2
             )  # One replacement for a genuinely deleted screen.
-            navigator.screens[OWNER].expires = 0
+            navigator.screens[(OWNER, OWNER)].expires = 0
             await h.click("menu_profile")
             assert "устарела" in h.request.answers[-1]["text"]
         finally:
@@ -299,10 +299,10 @@ def test_empty_failed_sources_and_command_cancellation(monkeypatch, tmp_path):
             await h.text("Question")
             await h.text("/menu")
             await h.text("Обычный текст")
-            assert not h.app.user_data[OWNER].get("poll_draft")
+            assert not h.context.user_data.get("poll_draft")
             await h.text("/bind")
             await h.click("bind_cancel")
-            assert not h.app.user_data[OWNER].get("awaiting_tag")
+            assert not h.context.user_data.get("awaiting_tag")
             assert len(h.sends(OWNER)) == 1
         finally:
             await h.shutdown()
@@ -327,14 +327,14 @@ def test_binding_picker_every_page_escapes_names_and_cancel_returns(
                 await h.click(f"pick:page:{n}")
             await h.click("pick:player:49")
             assert "API Token" in h.screen["text"]
-            assert h.app.user_data[OWNER]["awaiting_player_token"]
+            assert h.context.user_data["awaiting_player_token"]
             await h.click("bind_cancel")
             await h.text("/bind")
             await h.click("pick:manual:0")
             await h.text("неправильный тег")
             assert not h.storage.get_user_accounts(GROUP, OWNER)
             await h.text("/menu")
-            assert not h.app.user_data[OWNER].get("awaiting_player_token")
+            assert not h.context.user_data.get("awaiting_player_token")
             assert len(h.sends(OWNER)) == 1
         finally:
             await h.shutdown()
@@ -413,7 +413,7 @@ def test_token_retry_binding_success_and_unlink_confirmation_share_one_screen(
         try:
             await h.text("/bind")
             await h.click("pick:player:0")
-            tag = h.app.user_data[OWNER]["pending_coc_tag"]
+            tag = h.context.user_data["pending_coc_tag"]
             h.token_valid = False
             await h.text("invalid-offline-token")
             assert "Токен не подходит" in h.screen["text"]

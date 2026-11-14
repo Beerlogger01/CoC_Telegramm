@@ -3,6 +3,12 @@
 from urllib.parse import quote
 
 
+def row_name(value):
+    value = str(value or "—")
+    raw = value.encode()
+    return value if len(raw) <= 32 else raw[:29].decode("utf-8", errors="ignore") + "…"
+
+
 def short(value, size=22):
     return str(value if value is not None else "—")[:size]
 
@@ -16,15 +22,39 @@ async def view(route, owner, storage, group, fetch):
     def button(label, screen, **kw):
         buttons.append((label, {"s": screen, **kw}))
 
-    def paginate(items, title):
+    def paginate(items, title, size=10):
         nonlocal page
-        page = min(page, max(0, (len(items) - 1) // 3))
-        d["s"] = f"{title} · {page + 1}/{max(1, (len(items) + 2) // 3)}"
+        page = min(page, max(0, (len(items) - 1) // size))
+        d["s"] = f"{title} · {page + 1}/{max(1, (len(items) + size - 1) // size)}"
         if page:
             buttons.append(("←", {**route, "p": page - 1}))
-        if (page + 1) * 3 < len(items):
+        if (page + 1) * size < len(items):
             buttons.append(("→", {**route, "p": page + 1}))
-        return items[page * 3 : (page + 1) * 3]
+        return items[page * size : (page + 1) * size]
+
+    def player_rows(items, title, metric=None):
+        d["l"] = []
+        d["_actions"] = []
+        for x in paginate(items, title):
+            score = x.get(metric) if metric else None
+            if isinstance(score, float):
+                score = round(score, 1)
+            d["l"].append(
+                [
+                    row_name(x.get("name")),
+                    x.get("townHallLevel", x.get("townhallLevel", "—")),
+                    score if score is not None else "",
+                ]
+            )
+            d["_actions"].append(
+                {"s": "profile", "tag": x["tag"], "back": {**route, "p": page}}
+            )
+        d["o"] = page * 10
+        d["h"] = "TH · " + (
+            {"selectionScore": "Балл", "donations": "Донат", "remaining": "Атаки"}.get(
+                metric, "Профиль"
+            )
+        )
 
     accounts = storage.get_user_accounts(group, owner)
     if kind == "home":
@@ -48,20 +78,22 @@ async def view(route, owner, storage, group, fetch):
             button(label, screen)
     elif kind in {"accounts", "players"}:
         d["t"] = "Мои аккаунты" if kind == "accounts" else "Игроки клана"
+        members = (await fetch("/clan")).get("memberList", [])
+        by_tag = {m.get("tag"): m for m in members}
         items = (
-            [{"tag": a.coc_player_tag, "name": a.coc_player_tag} for a in accounts]
+            [
+                by_tag.get(
+                    a.coc_player_tag,
+                    {"tag": a.coc_player_tag, "name": a.coc_player_tag},
+                )
+                for a in accounts
+            ]
             if kind == "accounts"
-            else (await fetch("/clan")).get("memberList", [])
+            else members
         )
-        for x in paginate(items, "Аккаунты"):
-            button(short(x.get("name")), "profile", tag=x["tag"])
-            d["r"].append(
-                [
-                    short(x.get("name")),
-                    short(x.get("tag")),
-                    "TH " + str(x.get("townHallLevel", "—")),
-                ]
-            )
+        player_rows(items, "Аккаунты")
+        if kind == "players":
+            button("Донат", "donations")
         if not items:
             d["f"] = "Привяжи аккаунт через /bind."
     elif kind in {"profile", "heroes", "equipment", "progress"}:
@@ -106,6 +138,7 @@ async def view(route, owner, storage, group, fetch):
             for x in paginate(
                 player.get("heroes" if kind == "heroes" else "heroEquipment", []),
                 "Герои" if kind == "heroes" else "Снаряжение",
+                size=3,
             ):
                 d["r"].append(
                     [
@@ -124,7 +157,7 @@ async def view(route, owner, storage, group, fetch):
                     items.append((key, x))
                 elif isinstance(x, dict):
                     items.extend(x.items())
-            for key, x in paginate(items, "Развитие"):
+            for key, x in paginate(items, "Развитие", size=3):
                 d["r"].append(
                     [
                         short(key),
@@ -158,14 +191,10 @@ async def view(route, owner, storage, group, fetch):
         items = [
             m for m in c.get("members", []) if len(m.get("attacks") or []) < allowed
         ]
-        for m in paginate(items, "Неиспользованные атаки"):
-            d["r"].append(
-                [
-                    short(m.get("name")),
-                    "Осталось атак",
-                    str(allowed - len(m.get("attacks") or [])),
-                ]
-            )
+        items = [
+            {**m, "remaining": allowed - len(m.get("attacks") or [])} for m in items
+        ]
+        player_rows(items, "Осталось атак", "remaining")
         if not c:
             d["f"] = "Война отсутствует или данные недоступны"
     elif kind == "cwl":
@@ -194,30 +223,30 @@ async def view(route, owner, storage, group, fetch):
             button("Раунд →", "cwl", round=min(7, n + 1))
             button("Таблица", "cwl")
         else:
-            for x in paginate(data.get("standings", []), "Таблица"):
-                d["r"].append(
-                    [
-                        short(x.get("name")),
-                        "Место " + str(x.get("place", "—")),
-                        str(x.get("stars", "—")) + " ★",
-                    ]
-                )
+            d["l"] = [
+                [row_name(x.get("name")), x.get("place", "—"), x.get("stars", "—"), ""]
+                for x in data.get("standings", [])[:8]
+            ]
+            d["h"] = "Место · ★"
+            d["s"] = "Таблица группы"
             button("Раунды 1–7", "cwl", round=1)
     elif kind == "rating":
         mode = route.get("mode", "war")
         data = await fetch("/next-war", {"mode": mode, "size": 15})
         d["t"] = "Рейтинг " + ("КВ" if mode == "war" else "ЛВК")
-        for x in paginate(data.get("clanRanking", []), "Игроки"):
-            d["r"].append(
-                [
-                    short(x.get("name")),
-                    short(x.get("tag")),
-                    short(x.get("selectionScore")),
-                ]
-            )
-        d["f"] = "Баллы backend; опыт не равен качеству атак."
+        player_rows(data.get("clanRanking", []), "Игроки", "selectionScore")
         button("КВ", "rating", mode="war")
         button("ЛВК", "rating", mode="cwl")
+    elif kind == "donations":
+        clan = await fetch("/clan")
+        d["t"] = "Донат клана"
+        player_rows(
+            sorted(
+                clan.get("memberList", []), key=lambda x: -(x.get("donations") or 0)
+            ),
+            "Игроки",
+            "donations",
+        )
     elif kind == "tools":
         d.update(
             t="Управление кланом",
@@ -235,6 +264,8 @@ async def view(route, owner, storage, group, fetch):
             button(label, "flow", flow=flow)
     else:
         raise ValueError("Unknown screen")
+    if route.get("back") and kind == "profile":
+        buttons.append(("← К списку", route["back"]))
     if kind != "home":
         button("⌂ Штаб", "home")
     return d, buttons
