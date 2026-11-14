@@ -1,5 +1,7 @@
 """Bounded in-memory TTL cache for a single-container Home Assistant add-on."""
+
 import asyncio
+import copy
 import json
 import time
 from collections import OrderedDict
@@ -11,6 +13,8 @@ class TTLCache:
         self.max_entries = max_entries
         self._values = OrderedDict()
         self._lock = asyncio.Lock()
+        self._flights = {}
+        self.outbound = asyncio.Semaphore(5)
 
     async def get(self, key: str) -> Optional[str]:
         async with self._lock:
@@ -35,7 +39,28 @@ class TTLCache:
             while len(self._values) > self.max_entries:
                 self._values.popitem(last=False)
 
+    async def singleflight(self, key, factory):
+        task = self._flights.get(key)
+        if task is None:
+
+            async def run():
+                try:
+                    return await factory()
+                finally:
+                    self._flights.pop(key, None)
+
+            task = asyncio.create_task(run())
+            self._flights[key] = task
+            task.add_done_callback(
+                lambda t: t.exception() if not t.cancelled() else None
+            )
+        return copy.deepcopy(await asyncio.shield(task))
+
     async def close(self) -> None:
+        tasks = list(self._flights.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         async with self._lock:
             self._values.clear()
 
@@ -45,5 +70,7 @@ async def get_cached_json(redis: TTLCache, key: str) -> Optional[dict[str, Any]]
     return json.loads(value) if value is not None else None
 
 
-async def set_cached_json(redis: TTLCache, key: str, value: dict[str, Any], ttl_seconds: int) -> None:
+async def set_cached_json(
+    redis: TTLCache, key: str, value: dict[str, Any], ttl_seconds: int
+) -> None:
     await redis.set(key, json.dumps(value), ex=ttl_seconds)

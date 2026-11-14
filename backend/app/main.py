@@ -454,8 +454,8 @@ async def next_war(request: Request, mode: str = "war", size: int | None = None)
     redis = get_redis(request)
     client = get_http_client(request)
     try:
-        return await get_next_war_analysis(client, redis, request.app.state.history,
-                                           request.app.state.selection, mode=mode, size=size)
+        return await redis.singleflight(f'analysis:{mode}:{size}', lambda: get_next_war_analysis(
+            client, redis, request.app.state.history, request.app.state.selection, mode=mode, size=size))
     except InvalidTagError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except UnauthorizedError as exc:

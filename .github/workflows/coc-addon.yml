@@ -7,6 +7,7 @@ on:
       - "bot/**"
       - "coc_telegram/**"
       - "deploy/Dockerfile.addon"
+      - "scripts/check_widget_layout.py"
       - ".github/workflows/coc-addon.yml"
   pull_request:
     paths:
@@ -14,6 +15,7 @@ on:
       - "bot/**"
       - "coc_telegram/**"
       - "deploy/Dockerfile.addon"
+      - "scripts/check_widget_layout.py"
       - ".github/workflows/coc-addon.yml"
   workflow_dispatch:
 
@@ -36,8 +38,23 @@ jobs:
       - run: PYTHONPATH=bot python -m pytest bot/tests -q
       - run: PYTHONPATH=. python -m pytest coc_telegram/tests -q
 
+  widget-layout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r bot/requirements.txt playwright==1.64.1
+      - run: python -m playwright install --with-deps chromium
+      - run: PYTHONPATH=bot python scripts/check_widget_layout.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: widget-layout-previews
+          path: /tmp/widget-layout
+
   build:
-    needs: test
+    needs: [test, widget-layout]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

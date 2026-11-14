@@ -88,7 +88,8 @@ class Navigator:
         if not update.effective_user or not update.effective_chat:
             return None
         owner, chat_id = update.effective_user.id, update.effective_chat.id
-        old = self.screens.get(owner)
+        key = (chat_id, owner)
+        old = self.screens.get(key)
         target = (
             update.callback_query.message
             if update.callback_query
@@ -150,10 +151,10 @@ class Navigator:
                 raise
         if not hasattr(message, "message_id"):
             message = target
-        self.screens[owner] = Screen(
+        self.screens[key] = Screen(
             token, chat_id, message, time.monotonic() + self.ttl, actions
         )
-        self.screens.move_to_end(owner)
+        self.screens.move_to_end(key)
         while len(self.screens) > self.capacity:
             self.screens.popitem(last=False)
         return message
@@ -166,7 +167,7 @@ class Navigator:
             await vote_handler(update, context)
             return
         parts = raw.split(":", 2)
-        screen = self.screens.get(update.effective_user.id)
+        screen = self.screens.get((update.effective_chat.id, update.effective_user.id))
         valid = (
             len(parts) == 3
             and parts[0] == "ui"

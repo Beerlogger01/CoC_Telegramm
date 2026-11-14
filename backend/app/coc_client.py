@@ -55,7 +55,14 @@ def encode_tag(tag: str) -> str:
     return normalize_tag(tag).replace("#", "%23")
 
 
-async def fetch_with_cache(
+async def fetch_with_cache(client, redis, cache_key, url):
+    async def load():
+        async with redis.outbound:
+            return await _fetch_with_cache(client, redis, cache_key, url)
+    return await redis.singleflight(cache_key, load)
+
+
+async def _fetch_with_cache(
     client: httpx.AsyncClient,
     redis: TTLCache,
     cache_key: str,

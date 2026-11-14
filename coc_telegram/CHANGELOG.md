@@ -23,3 +23,11 @@
 ## 0.4.0 — opt-in private Widgets
 
 Add private HTML dashboard for accounts, growth, war, CWL and ratings. Existing authorized operational menus remain accessible from the dashboard; groups keep their current interface. Enable widgets_enabled, use /widgets; /classic restores the prior interface. See docs/widgets/README.md for scope and verification limits.
+
+## 0.4.1 — независимые сессии и списки по 10 игроков
+
+- Команды выполняются параллельно для разных пар чат/пользователь, последовательно внутри каждой пары. Личные и групповые экраны и незавершённые сценарии изолированы. Пул Telegram: 24 соединения, до 20 рабочих обработчиков.
+- До пяти живых Widget-сообщений на пользователя, срок 24 часа. Подготовленное обновление сохраняется до отправки; потерянный ответ Telegram можно безопасно повторить после перезапуска.
+- Интерактивные списки игроков, рейтингов и донатов по 10 строк; 8 кланов CWL на одной странице. Возврат из профиля сохраняет страницу списка.
+- Общие публичные запросы объединяются; ограничены одновременные запросы и объём кэша. Привязки и права не кэшируются в UI.
+- Раздельные коды диагностики backend, Telegram, устаревшего экрана, прав, SQLite и тайм-аутов без секретов.

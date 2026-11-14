@@ -201,3 +201,7 @@ Enable `widgets_enabled` in the add-on and send `/widgets` privately. `/classic`
 restores the existing interface. The first version provides live data dashboards
 and opens established inline flows for operational changes. See the
 [architecture, interface map, testing limits and update instructions](docs/widgets/README.md).
+
+## 0.4.1 — concurrent sessions
+
+See [multiuser architecture, recoverable delivery, 10-row widgets and test report](docs/widgets/0.4.1.md).
