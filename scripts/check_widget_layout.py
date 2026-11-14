@@ -67,7 +67,14 @@ async def main():
                                 + json.dumps(raw)
                                 + ",onEvent(){},ready(){},request(s){sent.push(s);return Promise.resolve({result:null})}};</script>"
                             )
-                            await page.set_content(css + shim + WIDGET_HTML)
+                            await page.set_content(
+                                '<!doctype html><html lang="ru"><head><meta charset="utf-8">'
+                                + css
+                                + "</head><body>"
+                                + shim
+                                + WIDGET_HTML
+                                + "</body></html>"
+                            )
                             count = await page.locator(".listrow").count()
                             assert count == (8 if kind == "cwl" else 10)
                             height = await page.locator("body").evaluate(
