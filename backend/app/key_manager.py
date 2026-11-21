@@ -22,9 +22,20 @@ class KeyManager:
         self.lock = asyncio.Lock()
         self.next_attempt = 0
         self.status = "MANUAL"
+        self.storage_valid = True
         self.state = {"owner": secrets.token_hex(12), "ids": []}
         if self.path.exists():
-            self.state = json.loads(self.path.read_text())
+            try:
+                saved = json.loads(self.path.read_text())
+                if (not isinstance(saved, dict) or not isinstance(saved.get("owner"), str)
+                        or not saved["owner"] or not isinstance(saved.get("ids"), list)
+                        or not all(isinstance(value, str) for value in saved["ids"])):
+                    raise ValueError("Invalid ownership metadata")
+                self.state = saved
+            except (OSError, ValueError):
+                self.storage_valid = False
+                self.status = "KEY_STATE_INVALID"
+                log.warning("CoC key ownership metadata invalid; manual credentials retained")
         else:
             self.save()
 
@@ -39,7 +50,7 @@ class KeyManager:
         os.replace(tmp, self.path)
 
     async def recover(self):
-        if not self.settings.coc_auto_keys:
+        if not self.settings.coc_auto_keys or not self.storage_valid:
             return False
         async with self.lock:
             if time.monotonic() < self.next_attempt:

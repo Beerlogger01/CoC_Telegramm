@@ -127,3 +127,16 @@ def test_changed_ip_switches_then_revokes_only_owned_key(tmp_path, monkeypatch):
         assert manager.state["ids"] == ["new-id"]
 
     asyncio.run(run())
+
+
+def test_corrupt_metadata_keeps_manual_mode_without_overwriting(tmp_path):
+    async def run():
+        path = tmp_path / "state"
+        path.write_text('{broken')
+        game = SimpleNamespace(headers={"Authorization": "Bearer manual"})
+        manager = KeyManager(SimpleNamespace(coc_auto_keys=True), game, path)
+        assert not await manager.recover()
+        assert manager.status == "KEY_STATE_INVALID"
+        assert path.read_text() == '{broken'
+        assert game.headers["Authorization"] == "Bearer manual"
+    asyncio.run(run())

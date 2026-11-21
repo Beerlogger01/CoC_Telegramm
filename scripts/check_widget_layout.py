@@ -24,6 +24,10 @@ async def main():
                 "townHallLevel": 18,
                 "selectionScore": 123.4,
                 "donations": 123456,
+                "accountStrength": 188.99,
+                "coverage": 100,
+                "thContribution": 180,
+                "contributions": {"heroes": 2.7, "troops": 2.7, "spells": 1.35, "siege": .9, "equipment": 1.35},
             }
             for i in range(45)
         ]
@@ -31,6 +35,15 @@ async def main():
             return_value={
                 "memberList": players,
                 "clanRanking": players,
+                "players": players,
+                "name": "ОченьДлинноеИмяИгрока",
+                "tag": "#P0",
+                "participations": 52,
+                "attacks": 312,
+                "gold": 999999,
+                "goldPerAttack": 999.9,
+                "attacksReceived": 100,
+                "defenseIndex": 66.7,
                 "standings": [
                     {
                         "name": "ОченьДлинныйКлан👑" + str(i),
@@ -44,8 +57,8 @@ async def main():
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             try:
-                for kind in ["players", "rating", "donations", "cwl"]:
-                    raw, _ = await w.data({"s": kind, "p": 1}, 7, "a" * 12, 42)
+                for kind in ["players", "rating", "donations", "cwl", "strength", "strength_detail", "profile", "raid_history", "defense"]:
+                    raw, _ = await w.data({"s": kind, "p": 1, "tag": "#P0"}, 7, "a" * 12, 42)
                     for theme in ["light", "dark"]:
                         for width in [320, 390]:
                             page = await browser.new_page(
@@ -76,7 +89,8 @@ async def main():
                                 + "</body></html>"
                             )
                             count = await page.locator(".listrow").count()
-                            assert count == (8 if kind == "cwl" else 10)
+                            expected = 8 if kind == "cwl" else (10 if kind in {"players", "rating", "donations", "strength"} else 0)
+                            assert count == expected
                             height = await page.locator("body").evaluate(
                                 "e=>e.getBoundingClientRect().height"
                             )
@@ -84,7 +98,7 @@ async def main():
                             assert await page.evaluate(
                                 "document.documentElement.scrollWidth <= innerWidth"
                             )
-                            if kind != "cwl":
+                            if kind != "cwl" and count:
                                 await page.locator(".listrow").first.click()
                                 assert await page.evaluate("sent.length") == 1
                                 assert (

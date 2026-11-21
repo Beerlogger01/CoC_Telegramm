@@ -1,6 +1,6 @@
-# Clan autonomy — development branch
+# CoC Telegram Bot 0.4.2
 
-This is a draft integration, not a production release. Do not enable automatic moderation before reviewing a fresh preview. Existing business tables and bindings are retained. The add-on release version is deliberately unchanged while acceptance checks remain outstanding.
+Release candidate 0.4.2. Automatic moderation and key management remain opt-in. Review a fresh preview before enabling moderation. Existing business tables and bindings are retained. After merging the release PR and successful image publication, refresh the Home Assistant add-on store and install the 0.4.2 update. Back up the add-on first; no reinstall is needed.
 
 ## Home Assistant
 
@@ -45,6 +45,6 @@ Defense scans stored completed wars (up to 100) in either clan orientation. It e
 
 ## Verification and remaining acceptance work
 
-Local suite: 68 backend, 136 bot, 5 add-on tests; ruff F checks. Local executor wake-up workaround remains external to the repository as documented for 0.4.1.
+Local suite: 69 backend, 136 bot, 5 add-on tests; ruff F checks. Local executor wake-up workaround remains external to the repository as documented for 0.4.1.
 
-Outstanding before release: broader moderation race/failure tests; full permission tests; raid trend UI and carefully validated hall/promotion integration; portal retry/recovery test matrix; full new Widget height/layout checks (new state payloads already tested ≤1024 bytes); live Telegram and developer-portal acceptance; ARM64/AMD64 CI results. No claim of physical Raspberry Pi or actual key rotation acceptance is made.
+Release CI checks all nine Widget screens in both themes at 320/390px, then builds ARM64/AMD64. New state payloads are tested ≤1024 bytes. Live Telegram/developer-portal and physical Raspberry Pi acceptance remains user-side. Additional work beyond this release: a raid trend UI, hall/promotion integration and broader moderation/portal fault-injection coverage. These are not claimed as completed features. Automatic features remain disabled by default.
