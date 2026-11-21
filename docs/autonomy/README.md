@@ -1,6 +1,6 @@
-# Clan autonomy — development branch
+# CoC Telegram Bot 0.4.2
 
-This is a draft integration, not a production release. Do not enable automatic moderation before reviewing a fresh preview. Existing business tables and bindings are retained. The add-on release version is deliberately unchanged while acceptance checks remain outstanding.
+Release candidate 0.4.2. Automatic moderation and key management remain opt-in. Review a fresh preview before enabling moderation. Existing business tables and bindings are retained. After merging the release PR and successful image publication, refresh the Home Assistant add-on store and install the 0.4.2 update. Back up the add-on first; no reinstall is needed.
 
 ## Home Assistant
 
