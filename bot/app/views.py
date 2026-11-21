@@ -69,6 +69,7 @@ def hub_screen(kind):
             [
                 [
                     ("⚔️ Рейтинг КВ", "menu_ratingwar"),
+                    ("🏰 Сила аккаунтов", "village:list:0"),
                     ("🏆 Рейтинг ЛВК", "menu_ratingcwl"),
                 ],
                 [("🎁 Донат сезона", "menu_donate"), ("🏅 Зал славы", "menu_hall")],

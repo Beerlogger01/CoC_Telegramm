@@ -8,7 +8,7 @@ Manual `coc_token` remains required as fallback. Enable `coc_auto_keys` and conf
 
 Portal recovery runs at startup and on 403. One asyncio lock serializes it, with a five-minute minimum retry interval. Source IPv4 comes from the portal's temporary token claims. A new key is probed on the clan endpoint before switching the shared client's Authorization header. Only IDs recorded locally AND carrying this installation's random owner name are eligible for revocation. Old keys are revoked after switching. At the account's ten-key limit the add-on stops rotation and requests manual action; it never deletes a manual key to make room. Portal failures preserve the existing manual/current credentials. Portal endpoint changes, CAPTCHA or additional login challenges require manual intervention.
 
-The adapter follows the login/list/create/revoke sequence inspected in coc.py's `coc/http.py`; it uses the existing httpx stack rather than adding an independent game client. Verification against a real developer account is outstanding. The requested cocapi implementation comparison is also outstanding.
+The adapter follows the login/list/create/revoke sequence inspected in coc.py's `coc/http.py`; it uses the existing httpx stack rather than adding an independent game client. Verification against a real developer account is outstanding. Also inspected cocapi/main/cocapi/key_manager.py: it uses httpx, optional local token persistence and name-based ownership. This adapter instead requires both a local recorded ID and an installation-specific name, preserves manual credentials, and uses the source IPv4 reported by the portal rather than third-party IP services.
 
 ## Group access
 
@@ -35,7 +35,7 @@ Independent of war results, activity, donations or discipline:
 
 Development is a weighted mean of observed `level/maxLevel` ratios: heroes 30%, troops 30%, spells 15%, siege 10%, equipment 15%. Missing components are excluded and coverage is reported. Empty/missing profiles have no index rather than zero. TH bands do not overlap. This is an index, not a percentage or a known building strength. API maxLevel is not guaranteed to be TH-specific. Same-TH percentile compares observed development among current clan peers; a single peer has no percentile. Known Builder Base entries and identified super troops are excluded; siege classification is versioned by names and requires maintenance for future units.
 
-Widgets: Players → Account strength, ten rows per page, click a row for contributions. `/account-strength` is the internal backend endpoint. Classic inline-menu integration remains outstanding.
+Widgets: Players → Account strength, ten rows per page, click a row for contributions. `/account-strength` is the internal backend endpoint. Classic UI exposes the same ranking via Ratings → Account strength and /strength, including ten-row pagination and detail contributions.
 
 ## History
 
@@ -45,6 +45,6 @@ Defense scans stored completed wars (up to 100) in either clan orientation. It e
 
 ## Verification and remaining acceptance work
 
-Local suite: 67 backend, 134 bot, 5 add-on tests; ruff F checks. Local executor wake-up workaround remains external to the repository as documented for 0.4.1.
+Local suite: 68 backend, 136 bot, 5 add-on tests; ruff F checks. Local executor wake-up workaround remains external to the repository as documented for 0.4.1.
 
-Outstanding before release: broader moderation race/failure tests; moderator failure notifications; full permission tests and user-facing role/access profile; classic ranking UI; raid trend UI and carefully validated hall/promotion integration; cocapi comparison; portal retry/recovery test matrix; full new Widget layout and 1024-byte checks; live Telegram and developer-portal acceptance; ARM64/AMD64 CI results. No claim of physical Raspberry Pi or actual key rotation acceptance is made.
+Outstanding before release: broader moderation race/failure tests; full permission tests; raid trend UI and carefully validated hall/promotion integration; portal retry/recovery test matrix; full new Widget height/layout checks (new state payloads already tested ≤1024 bytes); live Telegram and developer-portal acceptance; ARM64/AMD64 CI results. No claim of physical Raspberry Pi or actual key rotation acceptance is made.

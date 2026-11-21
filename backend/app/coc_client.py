@@ -73,6 +73,7 @@ async def _fetch_with_cache(
         logger.info("Cache hit key=%s", cache_key)
         return cached
 
+    credential = client.headers.get("Authorization") if hasattr(client, "headers") else None
     try:
         logger.info("CoC API request url=%s", url)
         response = await client.get(url)
@@ -88,7 +89,8 @@ async def _fetch_with_cache(
         raise UnauthorizedError("Unauthorized token")
     if response.status_code == 403:
         manager = getattr(client, "key_manager", None)
-        if manager and await manager.recover():
+        changed = bool(manager and client.headers.get("Authorization") != credential)
+        if manager and (changed or await manager.recover() or client.headers.get("Authorization") != credential):
             response = await client.get(url)
             if response.status_code == 200:
                 payload = response.json()
