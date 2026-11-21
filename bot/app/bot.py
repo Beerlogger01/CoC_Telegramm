@@ -15,6 +15,7 @@ from telegram import BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChat
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
+    ChatJoinRequestHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -24,6 +25,7 @@ from telegram.ext import (
 from telegram.error import TelegramError
 
 from app.sessions import SessionContext, SessionUpdateProcessor
+from app.clan_access import ClanAccess
 from app.widgets import Widgets, dispatch_widget, record, report_open_failure
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
@@ -2273,6 +2275,11 @@ async def main() -> None:
         settings.coc_clan_tag, settings.clan_group_id, has_captain_access, send_or_edit_message, fetch_for_operations)
     application.bot_data["widgets"] = Widgets(settings.bindings_db_path, application.bot_data["storage"])
     register_handlers(application)
+    access = ClanAccess(settings.bindings_db_path, application.bot_data["storage"])
+    application.bot_data["clan_access"] = access
+    application.add_handler(CommandHandler("clansync", access.command))
+    application.add_handler(ChatJoinRequestHandler(access.join))
+    application.job_queue.run_repeating(access.tick, interval=900, first=60, name="clan-access-sync")
     application.job_queue.run_repeating(polls.finish_due, interval=30, first=5, name="clan-poll-results")
 
     if settings.clan_group_id is not None:
@@ -2322,6 +2329,7 @@ async def main() -> None:
         await application.updater.stop()
         await application.stop()
         await application.bot_data["widgets"].close()
+        await application.bot_data["clan_access"].client.aclose()
         await application.shutdown()
         logger.info("Telegram bot shutdown complete")
 

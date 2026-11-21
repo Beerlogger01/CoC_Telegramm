@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     backend_url: str = "http://backend:8000"
     request_timeout_seconds: int = 30
     widgets_enabled: bool = False
+    clan_sync_auto: bool = False
+    clan_sync_delay_hours: int = 24
+    invite_leader: bool = True
+    invite_coleader: bool = True
+    invite_elder: bool = False
+    invite_member: bool = False
     debug: bool = False
     bindings_db_path: str = "/data/bindings.db"
     clan_group_id: int | None = None

@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", case_sensitive=False)
 
     coc_token: str | None = None
+    coc_auto_keys: bool = False
+    coc_email: str = ""
+    coc_password: str = ""
     coc_clan_tag: str | None = None
     cache_ttl_seconds: int = 300
     request_timeout_seconds: int = 30

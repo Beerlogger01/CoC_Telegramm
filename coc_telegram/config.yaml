@@ -14,6 +14,9 @@ host_network: false
 options:
   telegram_bot_token: ""
   coc_token: ""
+  coc_auto_keys: false
+  coc_email: ""
+  coc_password: ""
   coc_clan_tag: ""
   clan_group_id: ""
   invite_ttl_minutes: 10
@@ -27,9 +30,18 @@ options:
   request_timeout_seconds: 20
   debug: false
   widgets_enabled: false
+  clan_sync_auto: false
+  clan_sync_delay_hours: 24
+  invite_leader: true
+  invite_coleader: true
+  invite_elder: false
+  invite_member: false
 schema:
   telegram_bot_token: password
   coc_token: password
+  coc_auto_keys: bool
+  coc_email: str?
+  coc_password: password?
   coc_clan_tag: str
   clan_group_id: str?
   invite_ttl_minutes: int(1,1440)
@@ -43,3 +55,9 @@ schema:
   request_timeout_seconds: int(5,120)
   debug: bool
   widgets_enabled: bool
+  clan_sync_auto: bool
+  clan_sync_delay_hours: int(1,168)
+  invite_leader: bool
+  invite_coleader: bool
+  invite_elder: bool
+  invite_member: bool

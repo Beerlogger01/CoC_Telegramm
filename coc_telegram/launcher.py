@@ -26,6 +26,9 @@ def build_env(options_path: Path) -> dict[str, str]:
     fields = {
         "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
         "coc_token": "COC_TOKEN",
+        "coc_auto_keys": "COC_AUTO_KEYS",
+        "coc_email": "COC_EMAIL",
+        "coc_password": "COC_PASSWORD",
         "coc_clan_tag": "COC_CLAN_TAG",
         "clan_group_id": "CLAN_GROUP_ID",
         "invite_ttl_minutes": "INVITE_TTL_MINUTES",
@@ -39,6 +42,12 @@ def build_env(options_path: Path) -> dict[str, str]:
         "request_timeout_seconds": "REQUEST_TIMEOUT_SECONDS",
         "debug": "DEBUG",
         "widgets_enabled": "WIDGETS_ENABLED",
+        "clan_sync_auto": "CLAN_SYNC_AUTO",
+        "clan_sync_delay_hours": "CLAN_SYNC_DELAY_HOURS",
+        "invite_leader": "INVITE_LEADER",
+        "invite_coleader": "INVITE_COLEADER",
+        "invite_elder": "INVITE_ELDER",
+        "invite_member": "INVITE_MEMBER",
     }
     for name, key in fields.items():
         value = options.get(name)

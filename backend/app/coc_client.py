@@ -87,6 +87,13 @@ async def _fetch_with_cache(
     if response.status_code == 401:
         raise UnauthorizedError("Unauthorized token")
     if response.status_code == 403:
+        manager = getattr(client, "key_manager", None)
+        if manager and await manager.recover():
+            response = await client.get(url)
+            if response.status_code == 200:
+                payload = response.json()
+                await set_cached_json(redis, cache_key, payload, settings.cache_ttl_seconds)
+                return payload
         raise ForbiddenError("Forbidden (IP not whitelisted or token invalid)")
     if response.status_code == 429:
         raise RateLimitError("Rate limit exceeded")

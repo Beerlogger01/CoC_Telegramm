@@ -35,6 +35,10 @@ from app.war_history import WarHistory, completed_for_clan
 from app.hall import hall_of_fame
 from app.progress import ProgressStore
 from app.selection import SelectionStore
+from app.account_strength import rank as rank_accounts
+from app.key_manager import KeyManager
+from app.extended_history import RaidHistory, defense
+from app.coc_client import fetch_with_cache
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -90,6 +94,17 @@ async def collect_player_progress(client: httpx.AsyncClient, cache: TTLCache, st
         await asyncio.sleep(6 * 3600)
 
 
+async def collect_raids(client, cache, store):
+    while True:
+        try:
+            payload = await fetch_with_cache(client, cache, "raid-history:" + settings.coc_clan_tag,
+                settings.coc_api_base + "/clans/" + encode_tag(settings.coc_clan_tag) + "/capitalraidseasons")
+            store.save(settings.coc_clan_tag, payload.get("items", []))
+        except Exception:
+            logger.warning("Raid collection unavailable; history preserved")
+        await asyncio.sleep(21600)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     missing = validate_settings()
@@ -102,11 +117,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     timeout = httpx.Timeout(settings.request_timeout_seconds)
     headers = {"Authorization": "Bearer " + str(settings.coc_token)}
     client = httpx.AsyncClient(headers=headers, timeout=timeout)
+    if settings.coc_auto_keys:
+        client.key_manager = KeyManager(settings, client, os.environ.get("COC_KEY_STATE_PATH", "/data/coc_keys.json"))
+        await client.key_manager.recover()
 
     app.state.redis = redis
     app.state.http_client = client
     history_path = os.environ.get("WAR_HISTORY_DB_PATH", "/data/war_history.db")
     app.state.history = WarHistory(history_path)
+    app.state.raids = RaidHistory(history_path)
+    raid_poller = asyncio.create_task(collect_raids(client, redis, app.state.raids))
     app.state.progress = ProgressStore(os.environ.get("PLAYER_PROGRESS_DB_PATH", "/data/player_progress.db"))
     app.state.selection = SelectionStore(os.environ.get("SELECTION_DB_PATH", "/data/selection.db"))
     poller = asyncio.create_task(
@@ -121,6 +141,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         poller.cancel()
+        raid_poller.cancel()
+        try:
+            await raid_poller
+        except asyncio.CancelledError:
+            pass
         progress_poller.cancel()
         try:
             await progress_poller
@@ -147,8 +172,8 @@ def get_http_client(request: Request) -> httpx.AsyncClient:
 
 
 @app.get("/clan")
-async def clan(request: Request):
-    redis = get_redis(request)
+async def clan(request: Request, fresh: bool = False):
+    redis = TTLCache() if fresh else get_redis(request)
     client = get_http_client(request)
     try:
         return await get_clan(client, redis)
@@ -166,6 +191,41 @@ async def clan(request: Request):
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/defense/{tag}")
+async def defense_profile(tag: str, request: Request):
+    return defense(request.app.state.history.completed(100), settings.coc_clan_tag).get(tag, {"attacksReceived": None, "defenseIndex": None})
+
+
+@app.get("/raid-history/{tag}")
+async def raid_profile(tag: str, request: Request):
+    try:
+        data = await fetch_with_cache(get_http_client(request), get_redis(request), "raid-history:" + settings.coc_clan_tag,
+                                     settings.coc_api_base + "/clans/" + encode_tag(settings.coc_clan_tag) + "/capitalraidseasons")
+        request.app.state.raids.save(settings.coc_clan_tag, data.get("items", []))
+    except (ForbiddenError, UnauthorizedError, RateLimitError, TimeoutError, RuntimeError):
+        pass  # Preserve observed history when live API is unavailable.
+    return request.app.state.raids.summary(settings.coc_clan_tag, tag)
+
+
+@app.get("/account-strength")
+async def account_strength(request: Request):
+    roster = await clan(request)
+    gate = asyncio.Semaphore(4)
+
+    async def one(member):
+        async with gate:
+            try:
+                return await player(member["tag"], request)
+            except HTTPException as exc:
+                if exc.status_code in {401, 403}:
+                    raise
+                return {"tag": member["tag"], "name": member.get("name"),
+                        "townHallLevel": member.get("townHallLevel")}
+
+    profiles = await asyncio.gather(*(one(m) for m in roster.get("memberList", [])))
+    return {"players": rank_accounts(profiles)}
 
 
 @app.get("/player/{tag}")

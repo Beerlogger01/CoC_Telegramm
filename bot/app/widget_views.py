@@ -94,9 +94,10 @@ async def view(route, owner, storage, group, fetch):
         player_rows(items, "Аккаунты")
         if kind == "players":
             button("Донат", "donations")
+            button("Сила аккаунтов", "strength")
         if not items:
             d["f"] = "Привяжи аккаунт через /bind."
-    elif kind in {"profile", "heroes", "equipment", "progress"}:
+    elif kind in {"profile", "heroes", "equipment", "progress", "raid_history", "defense"}:
         tag = route["tag"]
         # Tags come from the server capability map; re-check membership/ownership.
         members = (await fetch("/clan")).get("memberList", [])
@@ -132,8 +133,20 @@ async def view(route, owner, storage, group, fetch):
                 ("Герои", "heroes"),
                 ("Снаряжение", "equipment"),
                 ("Развитие", "progress"),
+                ("Рейды", "raid_history"),
+                ("Защита", "defense"),
             ]:
                 button(label, screen, tag=tag)
+        elif kind == "raid_history":
+            history = await fetch("/raid-history/" + quote(tag, safe=""))
+            d["r"] = [["Рейды", "Наблюдалось", history.get("participations")], ["Атаки", "Использовано", history.get("attacks")], ["Золото", "Всего", history.get("gold")], ["На атаку", "Среднее", history.get("goldPerAttack")]]
+            d["f"] = "Отсутствие в истории не означает пропуск. Данные накапливаются со времени наблюдения."
+            button("Профиль", "profile", tag=tag)
+        elif kind == "defense":
+            history = await fetch("/defense/" + quote(tag, safe=""))
+            d["r"] = [["Атак на базу", "Наблюдалось", history.get("attacksReceived")], ["Индекс защиты", "Только равные TH", history.get("defenseIndex")]]
+            d["f"] = "0–100: сохранённые звёзды при равных TH. Более сильные атакующие не снижают индекс."
+            button("Профиль", "profile", tag=tag)
         elif kind in {"heroes", "equipment"}:
             for x in paginate(
                 player.get("heroes" if kind == "heroes" else "heroEquipment", []),
@@ -237,6 +250,23 @@ async def view(route, owner, storage, group, fetch):
         player_rows(data.get("clanRanking", []), "Игроки", "selectionScore")
         button("КВ", "rating", mode="war")
         button("ЛВК", "rating", mode="cwl")
+    elif kind == "strength":
+        data = await fetch("/account-strength")
+        d["t"] = "Сила аккаунтов"
+        player_rows(data.get("players", []), "Игроки", "accountStrength")
+        for action in d["_actions"]:
+            action["s"] = "strength_detail"
+    elif kind == "strength_detail":
+        data = await fetch("/account-strength")
+        item = next((p for p in data.get("players", []) if p.get("tag") == route.get("tag")), None)
+        if item is None:
+            raise ValueError("Account unavailable")
+        d.update(t=short(item.get("name")), s="Развитие аккаунта · не рейтинг КВ")
+        labels = {"heroes": "Герои", "troops": "Войска", "spells": "Заклинания", "siege": "Осадные", "equipment": "Снаряжение"}
+        d["r"] = [[labels[k], "Вклад", str(v) if v is not None else "Нет данных"] for k,v in item["contributions"].items()]
+        d["k"] = [["TH", item.get("townHallLevel")], ["Индекс", item.get("accountStrength")]]
+        d["f"] = f"Полнота {item['coverage']}%. TH: +{item['thContribution']}. MaxLevel API не гарантирует максимум данной TH."
+        buttons.append(("← К списку", route.get("back", {"s": "strength"})))
     elif kind == "donations":
         clan = await fetch("/clan")
         d["t"] = "Донат клана"
