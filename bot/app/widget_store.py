@@ -56,7 +56,8 @@ class WidgetStore:
             db.execute(
                 "INSERT OR REPLACE INTO widget_preferences VALUES (?,?)", (owner, mode)
             )
-            db.execute("DELETE FROM widget_screens WHERE owner=?", (owner,))
+            if mode == "classic":
+                db.execute("DELETE FROM widget_screens WHERE owner=?", (owner,))
 
     def create(self, owner):
         if type(owner) is not int or owner <= 0:

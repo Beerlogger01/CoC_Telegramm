@@ -24,7 +24,7 @@ from telegram.ext import (
 from telegram.error import TelegramError
 
 from app.sessions import SessionContext, SessionUpdateProcessor
-from app.widgets import Widgets, dispatch_widget
+from app.widgets import Widgets, dispatch_widget, record, report_open_failure
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
 from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
@@ -413,13 +413,13 @@ async def captain_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await send_or_edit_message(update, "Не удалось собрать отчёт.")
 
 
-async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE, *, use_widgets: bool = True) -> None:
     """Show a single navigable dashboard in private chats and groups."""
     if not update.effective_user:
         return
     cancel_input_modes(context)
     widgets = context.application.bot_data.get("widgets")
-    if widgets and await widgets.open(update, context):
+    if use_widgets and widgets and await widgets.open(update, context):
         return
     storage: BindingsStorage = context.application.bot_data["storage"]
     binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
@@ -2168,7 +2168,13 @@ async def widget_mode(update, context):
     widgets = context.application.bot_data.get("widgets")
     if widgets:
         mode = "classic" if update.effective_message.text.split()[0].split("@")[0] == "/classic" else "widgets"
-        widgets.store.preference(update.effective_user.id, mode)
+        try:
+            await widgets.db("preference", update.effective_user.id, mode)
+        except Exception as exc:
+            code = record("preference", exc)
+            await report_open_failure(context.bot, update.effective_chat.id, "preference", code)
+            await menu(update, context, use_widgets=False)
+            return
     await menu(update, context)
 
 
