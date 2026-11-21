@@ -11,14 +11,14 @@ ROLE_RANKS = {"leader": 4, "coLeader": 3, "admin": 2, "member": 1}
 
 
 def highest_role(profiles: list[dict]) -> str:
-    return max((str(p.get("role") or "member") for p in profiles),
-               key=lambda role: ROLE_RANKS.get(role, 0), default="member")
+    return max((str(p.get("role") or "member") for p in profiles if p.get("inConfiguredClan", True)),
+               key=lambda role: ROLE_RANKS.get(role, 0), default="unknown")
 
 
 def profile_text(profiles: list[dict], primary_tag: str | None, page: int = 0) -> str:
     role = highest_role(profiles)
     lines = ["👤 <b>Мой профиль · CoC</b>",
-             f"🛡️ Максимальное звание: <b>{ROLE_NAMES.get(role, 'Участник')}</b>",
+             f"🛡️ Максимальное звание в клане: <b>{ROLE_NAMES.get(role, 'Неизвестно / вне клана')}</b>",
              f"🎮 Подтверждено аккаунтов: <b>{len(profiles)}</b>", ""]
     page = page_index(page, len(profiles), 5)
     lines.append(f"Страница {page + 1}/{max(1, (len(profiles) + 4) // 5)}")

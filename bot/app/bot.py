@@ -15,6 +15,7 @@ from telegram import BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChat
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
+    ChatJoinRequestHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -24,7 +25,8 @@ from telegram.ext import (
 from telegram.error import TelegramError
 
 from app.sessions import SessionContext, SessionUpdateProcessor
-from app.widgets import Widgets, dispatch_widget
+from app.clan_access import ClanAccess
+from app.widgets import Widgets, dispatch_widget, record, report_open_failure
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
 from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
@@ -413,13 +415,13 @@ async def captain_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await send_or_edit_message(update, "Не удалось собрать отчёт.")
 
 
-async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE, *, use_widgets: bool = True) -> None:
     """Show a single navigable dashboard in private chats and groups."""
     if not update.effective_user:
         return
     cancel_input_modes(context)
     widgets = context.application.bot_data.get("widgets")
-    if widgets and await widgets.open(update, context):
+    if use_widgets and widgets and await widgets.open(update, context):
         return
     storage: BindingsStorage = context.application.bot_data["storage"]
     binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
@@ -892,6 +894,7 @@ async def _load_owned_profiles(update: Update, context: ContextTypes.DEFAULT_TYP
             except (httpx.HTTPStatusError, httpx.RequestError):
                 result = {"name": tag, "unavailable": True}
         result["tag"] = tag
+        result["inConfiguredClan"] = (result.get("clan") or {}).get("tag") == settings.coc_clan_tag
         league = result.get("leagueTier") or result.get("league") or {}
         result["leagueName"] = league.get("name") if isinstance(league, dict) else None
         result["isPrimary"] = False
@@ -923,7 +926,19 @@ async def accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     primary = next((p["tag"] for p in profiles if p.get("isPrimary")), None)
     page = page_index(context.user_data.get("accounts_page",0),len(profiles),5)
-    await send_or_edit_message(update, profile_text(profiles, primary, page),
+    access = context.application.bot_data.get("clan_access")
+    access_text = "Неизвестно"
+    if any(p.get("inConfiguredClan") for p in profiles):
+        access_text = "Игрок клана"
+    elif not any(p.get("unavailable") for p in profiles):
+        access_text = "Аккаунты отсутствуют в клане; применяется период подтверждения"
+    if access:
+        import time as access_time
+        with access.policy.connect() as db:
+            guest = db.execute("SELECT expires FROM access_guests WHERE group_id=? AND user_id=?", (settings.clan_group_id, update.effective_user.id)).fetchone()
+        if guest and (guest[0] is None or guest[0] > access_time.time()):
+            access_text = "Подтверждённый гость"
+    await send_or_edit_message(update, profile_text(profiles, primary, page) + "\nДоступ к группе: " + access_text,
                                parse_mode=ParseMode.HTML,
                                reply_markup=profile_keyboard(profiles, page))
 
@@ -2138,9 +2153,48 @@ async def clan_rating(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await next_war_analysis(update, context)
 
 
+async def village_strength(update, context):
+    try:
+        action, index = "list", 0
+        if update.callback_query:
+            await acknowledge(update)
+            _, action, raw = callback_data(update).split(":")
+            index = int(raw)
+        rows = context.user_data.get("village_ranking")
+        if rows is None or not update.callback_query:
+            async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+                data = await fetch_json(client, "/account-strength")
+            rows = data.get("players", [])
+            context.user_data["village_ranking"] = rows
+        if action == "detail" and 0 <= index < len(rows):
+            item = rows[index]
+            text = f"{item.get('name')} · TH{item.get('townHallLevel')}\nИндекс: {item.get('accountStrength')}\nПолнота: {item.get('coverage')}%\nВклад TH: {item.get('thContribution')}"
+            names = {"heroes": "Герои", "troops": "Войска", "spells": "Заклинания", "siege": "Осадные", "equipment": "Снаряжение"}
+            text += "\n" + "\n".join(f"{names[k]}: {v if v is not None else 'нет данных'}" for k,v in item['contributions'].items())
+            text += "\nПерцентиль среди равных TH: " + str(item.get('peerPercentile'))
+            text += "\nMaxLevel API не гарантирует максимум данной TH. Постройки не измеряются."
+            keyboard = [[InlineKeyboardButton("← К списку", callback_data=f"village:list:{index//10}")]]
+        else:
+            page = min(index, max(0, (len(rows)-1)//10))
+            text = f"🏰 Сила аккаунтов клана · страница {page+1}\nИндекс развития, без результатов КВ."
+            keyboard = [[InlineKeyboardButton(f"{i+1}. {str(p.get('name'))[:24]} · TH{p.get('townHallLevel')} · {p.get('accountStrength')}", callback_data=f"village:detail:{i}")] for i,p in enumerate(rows) if page*10 <= i < (page+1)*10]
+            arrows = []
+            if page:
+                arrows.append(InlineKeyboardButton("←", callback_data=f"village:list:{page-1}"))
+            if (page+1)*10 < len(rows):
+                arrows.append(InlineKeyboardButton("→", callback_data=f"village:list:{page+1}"))
+            if arrows:
+                keyboard.append(arrows)
+        keyboard.append([InlineKeyboardButton("Рейтинги", callback_data="menu_ratings")])
+        await send_or_edit_message(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
+    except (httpx.HTTPError, ValueError):
+        await send_or_edit_message(update, "Рейтинг силы временно недоступен. Повторите /strength.", reply_markup=back_buttons("menu_ratings"))
+
+
 def callback_routes(context):
     return [
         (r'bind_start', bind_start), (r'bind_cancel', bind_cancel),
+        (r'village:(list|detail):[0-9]+', village_strength),
         (r'pick:(manual|page|player):[0-9]+', roster_callback),
         (r'menu_[a-z]+', menu_callback),
         (r'players:(view|page|hall|donate):[0-9]+|players:(heroes|equipment):[0-9]+:[0-9]+', players_callback),
@@ -2168,7 +2222,13 @@ async def widget_mode(update, context):
     widgets = context.application.bot_data.get("widgets")
     if widgets:
         mode = "classic" if update.effective_message.text.split()[0].split("@")[0] == "/classic" else "widgets"
-        widgets.store.preference(update.effective_user.id, mode)
+        try:
+            await widgets.db("preference", update.effective_user.id, mode)
+        except Exception as exc:
+            code = record("preference", exc)
+            await report_open_failure(context.bot, update.effective_chat.id, "preference", code)
+            await menu(update, context, use_widgets=False)
+            return
     await menu(update, context)
 
 
@@ -2176,6 +2236,7 @@ def register_handlers(application):
     """The same complete route registry is used in production and offline UI checks."""
     application.add_handler(TypeHandler(Update, dispatch_widget), group=-3)
     application.add_handler(CommandHandler(["classic", "widgets"], widget_mode))
+    application.add_handler(CommandHandler("strength", village_strength))
     application.add_handler(CommandHandler("poll", create_poll))
 
     application.add_handler(TypeHandler(Update, ignore_duplicate_update), group=-2)
@@ -2267,6 +2328,11 @@ async def main() -> None:
         settings.coc_clan_tag, settings.clan_group_id, has_captain_access, send_or_edit_message, fetch_for_operations)
     application.bot_data["widgets"] = Widgets(settings.bindings_db_path, application.bot_data["storage"])
     register_handlers(application)
+    access = ClanAccess(settings.bindings_db_path, application.bot_data["storage"])
+    application.bot_data["clan_access"] = access
+    application.add_handler(CommandHandler("clansync", access.command))
+    application.add_handler(ChatJoinRequestHandler(access.join))
+    application.job_queue.run_repeating(access.tick, interval=900, first=60, name="clan-access-sync")
     application.job_queue.run_repeating(polls.finish_due, interval=30, first=5, name="clan-poll-results")
 
     if settings.clan_group_id is not None:
@@ -2316,6 +2382,7 @@ async def main() -> None:
         await application.updater.stop()
         await application.stop()
         await application.bot_data["widgets"].close()
+        await application.bot_data["clan_access"].client.aclose()
         await application.shutdown()
         logger.info("Telegram bot shutdown complete")
 

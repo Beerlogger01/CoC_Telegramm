@@ -5,7 +5,7 @@ import logging
 import sqlite3
 import httpx
 from telegram import Update
-from telegram.error import BadRequest, Forbidden, NetworkError
+from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TimedOut
 from telegram.ext import ApplicationHandlerStop
 from app.settings import settings
 from app.sessions import SessionContext, SessionUpdateProcessor
@@ -25,9 +25,14 @@ def diagnostic(exc):
     if isinstance(exc, StaleWidget):
         return str(exc) if str(exc).startswith("WIDGET_") else "WIDGET_EXPIRED"
     if isinstance(exc, sqlite3.OperationalError):
-        return "SQLITE_BUSY"
-    if isinstance(exc, TimeoutError) or isinstance(exc, httpx.TimeoutException):
+        code = getattr(exc, "sqlite_errorcode", 0) or 0
+        return "SQLITE_BUSY" if code & 255 in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED} else "SQLITE_ERROR"
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException, TimedOut)):
         return "TIMEOUT"
+    if isinstance(exc, RetryAfter):
+        return "TELEGRAM_RATE_LIMITED"
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {401, 403}:
+        return "BACKEND_ACCESS_DENIED"
     if isinstance(exc, httpx.HTTPError):
         return "BACKEND_UNAVAILABLE"
     if isinstance(exc, BadRequest):
@@ -54,6 +59,34 @@ def record(stage, exc):
     code = diagnostic(exc)
     logger.warning("widget operation=%s code=%s", stage, code)
     return code
+
+
+async def report_open_failure(bot, chat_id, stage, code):
+    # Only fixed diagnostic codes are exposed, never exception text or payloads.
+    reasons = {
+        "TIMEOUT": "Превышено время ожидания.",
+        "BACKEND_UNAVAILABLE": "Сервис статистики временно недоступен.",
+        "BACKEND_ACCESS_DENIED": "Сервис статистики отказал в доступе (401/403). Администратору нужно проверить ключ CoC API и разрешённый внешний IP сервера.",
+        "TELEGRAM_API_UNAVAILABLE": "Не удалось связаться с Telegram.",
+        "TELEGRAM_API_UNSUPPORTED": "Telegram API сообщил, что виджеты не поддерживаются.",
+        "TELEGRAM_API_REJECTED": "Telegram отклонил отправку виджета.",
+        "TELEGRAM_RATE_LIMITED": "Telegram ограничил частоту запросов. Попробуйте позже.",
+        "SQLITE_BUSY": "Хранилище временно занято.",
+        "SQLITE_ERROR": "Ошибка хранилища виджетов.",
+        "PERMISSION_DENIED": "Недостаточно прав для операции.",
+        "STATE_ENCODING_ERROR": "Не удалось подготовить данные виджета.",
+    }
+    try:
+        async with asyncio.timeout(3):
+            await bot.send_message(
+                chat_id=chat_id,
+                text="Не удалось открыть виджет. "
+                + reasons.get(code, "Внутренняя ошибка виджета.")
+                + f"\nДиагностика: {stage} / {code}."
+                + "\nОткрываю обычное меню. Повторить: /widgets.",
+            )
+    except Exception as exc:
+        record("openFailureNotice", exc)
 
 
 async def api(bot, method, data):
@@ -143,7 +176,8 @@ class Widgets:
             await self.db("publish", token, 0, actions, result["message_id"])
             return True
         except Exception as exc:
-            record(stage, exc)
+            code = record(stage, exc)
+            await report_open_failure(context.bot, chat.id, stage, code)
             return False
 
     async def query(self, query, bot, application=None):
