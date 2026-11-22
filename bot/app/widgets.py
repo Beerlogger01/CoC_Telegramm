@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import hashlib
+import re
 import sqlite3
 import httpx
 from telegram import Update
@@ -58,6 +60,12 @@ def diagnostic(exc):
 def record(stage, exc):
     code = diagnostic(exc)
     logger.warning("widget operation=%s code=%s", stage, code)
+    if isinstance(exc, BadRequest):
+        # A fixed vocabulary gives support useful hints without logging server payloads.
+        allowed = {"widget", "widgets", "html", "data", "chat", "message", "invalid", "empty", "large", "long", "limit", "many", "expired", "unsupported", "parse", "button", "query", "not", "found", "too"}
+        words = set(re.findall(r"[a-z]+", str(exc).lower())) & allowed
+        signature = hashlib.sha256(str(exc).encode()).hexdigest()[:12]
+        logger.warning("widget rejection signature=%s hints=%s", signature, ",".join(sorted(words)) or "unknown")
     return code
 
 

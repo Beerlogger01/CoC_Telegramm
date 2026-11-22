@@ -95,6 +95,9 @@ class Navigator:
             if update.callback_query
             else (old.message if old and old.chat_id == chat_id else None)
         )
+        # Explicit group commands need a visible new reply, not an edit far up in history.
+        if not update.callback_query and getattr(update.effective_chat, "type", None) in {"group", "supergroup"}:
+            target = None
         token = secrets.token_hex(4)
         actions = set()
         rows = []
