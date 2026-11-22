@@ -262,11 +262,22 @@ async def view(route, owner, storage, group, fetch):
         if item is None:
             raise ValueError("Account unavailable")
         d.update(t=short(item.get("name")), s="Развитие аккаунта · не рейтинг КВ")
-        labels = {"heroes": "Герои", "troops": "Войска", "spells": "Заклинания", "siege": "Осадные", "equipment": "Снаряжение"}
-        d["r"] = [[labels[k], "Вклад", str(v) if v is not None else "Нет данных"] for k,v in item["contributions"].items()]
+        labels = {"heroes": "Герои", "troops": "Войска", "spells": "Заклинания", "siege": "Осадные машины", "equipment": "Снаряжение"}
+        d["r"] = [[labels[k], "Баллы", str(v) if v is not None else "Нет данных"] for k,v in item["contributions"].items()]
         d["k"] = [["TH", item.get("townHallLevel")], ["Индекс", item.get("accountStrength")]]
-        d["f"] = f"Полнота {item['coverage']}%. TH: +{item['thContribution']}. MaxLevel API не гарантирует максимум данной TH."
+        d["f"] = f"Доступность данных: {item['coverage']}%. Ратуша: +{item['thContribution']} баллов."
+        button("Как считается", "strength_help", page=0, back=dict(route))
         buttons.append(("← К списку", route.get("back", {"s": "strength"})))
+    elif kind == "strength_help":
+        from app.strength_help import HELP_PAGES
+        number = min(max(0, int(route.get("page", 0))), len(HELP_PAGES)-1)
+        title, explanation = HELP_PAGES[number]
+        d.update(t=title, s=f"Об оценке · {number+1}/{len(HELP_PAGES)}", f=explanation)
+        if number:
+            button("←", "strength_help", page=number-1, back=route.get("back"))
+        if number+1 < len(HELP_PAGES):
+            button("→", "strength_help", page=number+1, back=route.get("back"))
+        buttons.append(("К оценке", route.get("back") or {"s":"strength"}))
     elif kind == "donations":
         clan = await fetch("/clan")
         d["t"] = "Донат клана"

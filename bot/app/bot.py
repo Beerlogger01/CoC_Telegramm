@@ -2160,6 +2160,11 @@ async def village_strength(update, context):
             await acknowledge(update)
             _, action, raw = callback_data(update).split(":")
             index = int(raw)
+        if action == "help":
+            from app.strength_help import explanation_text
+            await send_or_edit_message(update, explanation_text(), parse_mode=None,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("К оценке", callback_data=f"village:detail:{index}")]]))
+            return
         rows = context.user_data.get("village_ranking")
         if rows is None or not update.callback_query:
             async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
@@ -2168,12 +2173,13 @@ async def village_strength(update, context):
             context.user_data["village_ranking"] = rows
         if action == "detail" and 0 <= index < len(rows):
             item = rows[index]
-            text = f"{item.get('name')} · TH{item.get('townHallLevel')}\nИндекс: {item.get('accountStrength')}\nПолнота: {item.get('coverage')}%\nВклад TH: {item.get('thContribution')}"
-            names = {"heroes": "Герои", "troops": "Войска", "spells": "Заклинания", "siege": "Осадные", "equipment": "Снаряжение"}
-            text += "\n" + "\n".join(f"{names[k]}: {v if v is not None else 'нет данных'}" for k,v in item['contributions'].items())
+            text = f"{item.get('name')} · TH{item.get('townHallLevel')}\nИндекс: {item.get('accountStrength')}\nДоступность данных: {item.get('coverage')}%\nВклад TH: {item.get('thContribution')}"
+            names = {"heroes": "Герои", "troops": "Войска", "spells": "Заклинания", "siege": "Осадные машины", "equipment": "Снаряжение"}
+            text += "\nВклад категорий в баллы:\n" + "\n".join(f"{names[k]}: {v if v is not None else 'нет данных'}" for k,v in item['contributions'].items())
             text += "\nПерцентиль среди равных TH: " + str(item.get('peerPercentile'))
             text += "\nMaxLevel API не гарантирует максимум данной TH. Постройки не измеряются."
             keyboard = [[InlineKeyboardButton("← К списку", callback_data=f"village:list:{index//10}")]]
+            keyboard.insert(0, [InlineKeyboardButton("Как считается", callback_data=f"village:help:{index}")])
         else:
             page = min(index, max(0, (len(rows)-1)//10))
             text = f"🏰 Сила аккаунтов клана · страница {page+1}\nИндекс развития, без результатов КВ."
@@ -2194,7 +2200,7 @@ async def village_strength(update, context):
 def callback_routes(context):
     return [
         (r'bind_start', bind_start), (r'bind_cancel', bind_cancel),
-        (r'village:(list|detail):[0-9]+', village_strength),
+        (r'village:(list|detail|help):[0-9]+', village_strength),
         (r'pick:(manual|page|player):[0-9]+', roster_callback),
         (r'menu_[a-z]+', menu_callback),
         (r'players:(view|page|hall|donate):[0-9]+|players:(heroes|equipment):[0-9]+:[0-9]+', players_callback),

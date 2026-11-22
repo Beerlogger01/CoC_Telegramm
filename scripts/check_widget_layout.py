@@ -57,8 +57,8 @@ async def main():
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             try:
-                for kind in ["players", "rating", "donations", "cwl", "strength", "strength_detail", "profile", "raid_history", "defense"]:
-                    raw, _ = await w.data({"s": kind, "p": 1, "tag": "#P0"}, 7, "a" * 12, 42)
+                for kind in ["players", "rating", "donations", "cwl", "strength", "strength_detail", "profile", "raid_history", "defense", "strength_help"]:
+                    raw, _ = await w.data({"s": kind, "p": 1, "page": 3, "tag": "#P0"}, 7, "a" * 12, 42)
                     for theme in ["light", "dark"]:
                         for width in [320, 390]:
                             page = await browser.new_page(
